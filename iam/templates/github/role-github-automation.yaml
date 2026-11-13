@@ -1,0 +1,133 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: OIDC provider and initial roles for GitHub Actions
+
+Metadata:
+  metaTemplateInfo:
+    Name: role-github-automation
+    Description: IAM Roles for GitHub Action Automation
+    Deploy-To: Once in any account
+    Version: 1.0.0
+    Source: armory/iam/templates/github/role-github-automation.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241220
+    Nonce: 20241206
+
+Parameters:
+  pUpdateNonce:
+    Description: >
+      Optional: Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Type: String
+
+  pGitHubOrg:
+    Description: GitHub organization (or user) whose repositories may assume these roles
+    Type: String
+    Default: quiverstone
+
+Resources:
+  rIamRoleDeploy:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-automation-deploy
+      Description: Primary Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PrimaryGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !ImportValue GitHubOidcIdpARN
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # admin access only from the default branch or a protected GitHub environment
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${pGitHubOrg}/*:ref:refs/heads/main
+                  - !Sub repo:${pGitHubOrg}/*:environment:*
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleDeliver:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-automation-deliver
+      Description: Deliver Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DeliverGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !ImportValue GitHubOidcIdpARN
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${pGitHubOrg}/*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleRead:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-automation-read
+      Description: Read Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !ImportValue GitHubOidcIdpARN
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${pGitHubOrg}/*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oUpdateNonce:
+    Description: A Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Value: !Ref pUpdateNonce
+
+  oDeployRoleArn:
+    Description: ARN of GitHub Actions Deploy Role
+    Value: !GetAtt rIamRoleDeploy.Arn
+    Export:
+      Name: DeployRoleARN
+
+  oDeliverRoleArn:
+    Description: ARN of GitHub Actions Deliver Role
+    Value: !GetAtt rIamRoleDeliver.Arn
+    Export:
+      Name: DeliverRoleARN
+
+  oReadRoleArn:
+    Description: ARN of GitHub Actions Read Role
+    Value: !GetAtt rIamRoleRead.Arn
+    Export:
+      Name: ReadRoleARN

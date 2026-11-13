@@ -1,0 +1,17 @@
+organizations/policies/scps/aft-protect-sso-params.json
+organizations/policies/scps/deny-outside-us.json
+organizations/policies/scps/organization-wide-policies.json
+organizations/templates/stackset-sh-organization-foundation.yaml
+s3/templates/bucket-external-assets.yaml
+control-tower/templates/controltower-kms-key.yaml
+iam/templates/iam-settings-password-policy.yaml
+iam/templates/stackset-iam-cloudformation-roles.yaml
+iam/templates/role-cloudformation-execution.yaml
+iam/templates/github/role-github-automation.yaml
+iam/templates/github/idp-github-oidc.yaml
+iam/templates/role-cloudformation-admin.yaml
+iam/templates/role-support-assume.yaml
+automation/templates/foundational-automation.yaml
+backup/templates/org-backup-kms-key.yaml
+billing/templates/bucket-cur-data.yaml
+ec2/templates/ebs-enable-encryption.yaml

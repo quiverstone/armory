@@ -1,0 +1,250 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for updating primary and alternate contact information on all organization accounts
+
+Metadata:
+  metaTemplateInfo:
+    Name: act-update-contact-info
+    Description: Automation for updating primary and alternate contact information on all organization accounts
+    Version: 1.0.0
+    Source: armory/account/templates/act-update-contact-info-param.yaml
+    Note: Deploy to management account only to update contact info across all org accounts
+    Security Hub: Account.1
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+  pExcludeAccountIds:
+    Description: Comma-separated list of account IDs to exclude (e.g. management accounts)
+    Type: String
+    Default: ""
+
+  pPrimaryFullName:
+    Description: Primary contact full name
+    Type: String
+
+  pPrimaryCompanyName:
+    Description: Primary contact company name
+    Type: String
+
+  pPrimaryAddressLine1:
+    Description: Primary contact address line 1
+    Type: String
+
+  pPrimaryCity:
+    Description: Primary contact city
+    Type: String
+
+  pPrimaryStateOrRegion:
+    Description: Primary contact state or region
+    Type: String
+    AllowedPattern: ^[a-z]{2}(-gov)?-[a-z]+-\d$
+    ConstraintDescription: Must be an AWS region code such as us-east-2
+
+  pPrimaryPostalCode:
+    Description: Primary contact postal code
+    Type: String
+
+  pPrimaryCountryCode:
+    Description: Primary contact country code (e.g. US)
+    Type: String
+
+  pPrimaryPhoneNumber:
+    Description: Primary contact phone number
+    Type: String
+
+  pPrimaryWebsiteUrl:
+    Description: Primary contact website URL
+    Type: String
+    Default: ""
+
+  pAltContactName:
+    Description: Alternate contact name (used for Security, Operations, and Billing)
+    Type: String
+
+  pAltContactTitle:
+    Description: Alternate contact title
+    Type: String
+
+  pAltContactEmail:
+    Description: Alternate contact email address
+    Type: String
+    AllowedPattern: ^$|^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be a valid email address
+
+  pAltContactPhone:
+    Description: Alternate contact phone number
+    Type: String
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "act-contact-info-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: act-contact-info-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: OrganizationsListAccounts
+            Effect: Allow
+            Action:
+              - organizations:ListAccounts
+            Resource: "*"
+          - Sid: AccountContactManagement
+            Effect: Allow
+            Action:
+              - account:PutContactInformation
+              - account:PutAlternateContact
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentActUpdateContactInfo:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: act-update-contact-info
+      Content:
+        description: Python to Update Primary and Alternate Contact Information Across Organization
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: update_contact_info
+            description: Updates primary and alternate contact information on all organization accounts
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: update_contact_info_handler
+              Script: !Sub |-
+                import boto3
+
+                EXCLUDE_ACCOUNTS = [a.strip() for a in "${pExcludeAccountIds}".split(",") if a.strip()]
+
+                PRIMARY_CONTACT = {
+                  "FullName": "${pPrimaryFullName}",
+                  "CompanyName": "${pPrimaryCompanyName}",
+                  "AddressLine1": "${pPrimaryAddressLine1}",
+                  "City": "${pPrimaryCity}",
+                  "StateOrRegion": "${pPrimaryStateOrRegion}",
+                  "PostalCode": "${pPrimaryPostalCode}",
+                  "CountryCode": "${pPrimaryCountryCode}",
+                  "PhoneNumber": "${pPrimaryPhoneNumber}",
+                  "WebsiteUrl": "${pPrimaryWebsiteUrl}",
+                }
+
+                ALT_CONTACT = {
+                  "Name": "${pAltContactName}",
+                  "Title": "${pAltContactTitle}",
+                  "EmailAddress": "${pAltContactEmail}",
+                  "PhoneNumber": "${pAltContactPhone}",
+                }
+
+                ALT_CONTACT_TYPES = ["SECURITY", "OPERATIONS", "BILLING"]
+
+                def update_contact_info_handler(events, context):
+                  org_client = boto3.client("organizations")
+                  account_client = boto3.client("account")
+
+                  accounts = []
+                  paginator = org_client.get_paginator("list_accounts")
+                  for page in paginator.paginate():
+                    accounts.extend(page["Accounts"])
+
+                  updated = []
+                  skipped = []
+                  failed = []
+
+                  for account in accounts:
+                    account_id = account["Id"]
+                    if account_id in EXCLUDE_ACCOUNTS:
+                      skipped.append(account_id)
+                      continue
+
+                    try:
+                      primary = {k: v for k, v in PRIMARY_CONTACT.items() if v}
+                      account_client.put_contact_information(
+                        AccountId=account_id,
+                        ContactInformation=primary,
+                      )
+
+                      for contact_type in ALT_CONTACT_TYPES:
+                        account_client.put_alternate_contact(
+                          AccountId=account_id,
+                          AlternateContactType=contact_type,
+                          **ALT_CONTACT,
+                        )
+
+                      updated.append(account_id)
+                      print("Updated contact info for account: {}".format(account_id))
+                    except Exception as e:
+                      failed.append(account_id)
+                      print("Failed to update account {}: {}".format(account_id, str(e)))
+
+                  print("Updated: {}, Skipped: {}, Failed: {}".format(len(updated), len(skipped), len(failed)))
+                  return {"updated": updated, "skipped": skipped, "failed": failed}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleActUpdateContactInfo:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: act-update-contact-info
+      Description: Schedule the updating of contact information across organization accounts
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "act-update-contact-info"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

@@ -1,0 +1,221 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Create a monthly budget with customizable amounts for each month
+
+Parameters:
+  pEmail:
+    Type: String
+    Description: User or Mailbox Email Address
+    AllowedPattern: ^$|^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be a valid email address
+
+Resources:
+  rBudgetDailyAll:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: Daily-All-Services
+        BudgetLimit:
+          Amount: 3496
+          Unit: USD
+        TimeUnit: DAILY
+        BudgetType: COST
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: false
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: false
+          IncludeRecurring: true
+          IncludeOtherSubscription: false
+          IncludeSupport: false
+          IncludeDiscount: true
+          UseAmortized: true
+      NotificationsWithSubscribers:
+        - Notification:
+            ComparisonOperator: GREATER_THAN
+            NotificationType: ACTUAL
+            Threshold: 99
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref pEmail
+
+  rBudgetDailyAutoAll:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        AutoAdjustData:
+          AutoAdjustType: HISTORICAL
+          HistoricalOptions:
+            BudgetAdjustmentPeriod: 3
+        BudgetName: Daily-Auto-All-Services
+        TimeUnit: DAILY
+        BudgetType: COST
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: false
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: false
+          IncludeRecurring: true
+          IncludeOtherSubscription: false
+          IncludeSupport: false
+          IncludeDiscount: true
+          UseAmortized: true
+      NotificationsWithSubscribers:
+        - Notification:
+            ComparisonOperator: GREATER_THAN
+            NotificationType: ACTUAL
+            Threshold: 99
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref pEmail
+
+  rBudgetDailyAutoEc2:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        AutoAdjustData:
+          AutoAdjustType: HISTORICAL
+          HistoricalOptions:
+            BudgetAdjustmentPeriod: 3
+        BudgetName: Daily-Auto-EC2
+        TimeUnit: DAILY
+        BudgetType: COST
+        CostFilters:
+          Service:
+            - Amazon Elastic Compute Cloud - Compute
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: false
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: false
+          IncludeRecurring: true
+          IncludeOtherSubscription: false
+          IncludeSupport: false
+          IncludeDiscount: true
+          UseAmortized: true
+      NotificationsWithSubscribers:
+        - Notification:
+            ComparisonOperator: GREATER_THAN
+            NotificationType: ACTUAL
+            Threshold: 99
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref pEmail
+
+  rBudgetMonthlyPlannedAll:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: Monthly-Planned-All-Services
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        PlannedBudgetLimits:
+          '1696118400':
+            Amount: '108403.0'
+            Unit: USD
+          '1698796800':
+            Amount: '105945.0'
+            Unit: USD
+          '1701388800':
+            Amount: '96597.0'
+            Unit: USD
+          '1704067200':
+            Amount: '96000.0'
+            Unit: USD
+          '1706745600':
+            Amount: '96000.0'
+            Unit: USD
+          '1709251200':
+            Amount: '96000.0'
+            Unit: USD
+          '1711929600':
+            Amount: '96000.0'
+            Unit: USD
+          '1714521600':
+            Amount: '96000.0'
+            Unit: USD
+          '1717200000':
+            Amount: '96000.0'
+            Unit: USD
+          '1719792000':
+            Amount: '96000.0'
+            Unit: USD
+          '1722470400':
+            Amount: '96000.0'
+            Unit: USD
+          '1725148800':
+            Amount: '96000.0'
+            Unit: USD
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: false
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: false
+          IncludeRecurring: true
+          IncludeOtherSubscription: false
+          IncludeSupport: false
+          IncludeDiscount: true
+          UseAmortized: true
+      NotificationsWithSubscribers:
+        - Notification:
+            ComparisonOperator: GREATER_THAN
+            NotificationType: ACTUAL
+            Threshold: 99
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref pEmail
+
+  rBudgetQuarterlyPlannedAll:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: Quarterly-Planned-All-Services
+        BudgetType: COST
+        TimeUnit: QUARTERLY
+        PlannedBudgetLimits:
+          '1696118400':
+            Amount: '310945.0'
+            Unit: USD
+          '1704067200':
+            Amount: '310000.0'
+            Unit: USD
+          '1711929600':
+            Amount: '310000.0'
+            Unit: USD
+          '1719792000':
+            Amount: '310000.0'
+            Unit: USD
+        CostTypes:
+          IncludeTax: true
+          IncludeSubscription: false
+          UseBlended: false
+          IncludeRefund: false
+          IncludeCredit: false
+          IncludeUpfront: false
+          IncludeRecurring: true
+          IncludeOtherSubscription: false
+          IncludeSupport: false
+          IncludeDiscount: true
+          UseAmortized: true
+      NotificationsWithSubscribers:
+        - Notification:
+            ComparisonOperator: GREATER_THAN
+            NotificationType: ACTUAL
+            Threshold: 99
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref pEmail

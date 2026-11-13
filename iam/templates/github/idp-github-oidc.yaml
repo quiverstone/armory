@@ -1,0 +1,48 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: OIDC IDP for GitHub Actions
+
+Metadata:
+  metaTemplateInfo:
+    Name: idp-github-oidc
+    Description: IAM IDP for GitHub Actions OIDC
+    Deploy-To: Once in any account
+    Version: 1.0.0
+    Source: armory/iam/templates/github/idp-github-oidc.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pUpdateNonce:
+    Description: >
+      Optional: Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Type: String
+
+Resources:
+  rIamOidcProviderMain:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Url: https://token.actions.githubusercontent.com
+      Tags:
+        - Key: Name
+          Value: GitHubActions
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oUpdateNonce:
+    Description: A Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Value: !Ref pUpdateNonce
+
+  oIdpArn:
+    Description: ARN of Github OIDC Provider
+    Value: !GetAtt rIamOidcProviderMain.Arn
+    Export:
+      Name: GitHubOidcIdpARN

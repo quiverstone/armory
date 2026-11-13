@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-observability): read metrics, logs,
+  traces and alarms across the org, plus non-destructive diagnostic writes
+  (CloudWatch dashboards, Logs Insights queries, X-Ray). For AI tooling doing
+  investigation/triage. No alarm/log deletion, no config teardown.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-observability
+    Tier: read-plus-diagnostic-write
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-observability.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+          - pDashboardPrefix
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: internal
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag.
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+  pDashboardPrefix:
+    Description: Name prefix of the CloudWatch dashboards this set may create, change and delete
+    Type: String
+    Default: ai-
+    AllowedPattern: ^[A-Za-z0-9_-]{1,64}$
+    ConstraintDescription: 1-64 letters, digits, _ or -
+
+Resources:
+  rSsoPermissionSetAiObservability:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-observability
+      Description: "AI observability: metrics/logs/traces read + non-destructive diagnostic writes (dashboards, Logs Insights, X-Ray)."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/CloudWatchReadOnlyAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSXrayReadOnlyAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSCloudTrail_ReadOnlyAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: LogsReadAndInsights
+            Effect: Allow
+            Action:
+              - logs:Describe*
+              - logs:Get*
+              - logs:List*
+              - logs:FilterLogEvents
+              - logs:StartQuery
+              - logs:StopQuery
+              - logs:StartLiveTail
+              - logs:StopLiveTail
+              - logs:TestMetricFilter
+            Resource: "*"
+          - Sid: CloudWatchMetricQueries
+            Effect: Allow
+            Action:
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricWidgetImage
+            Resource: "*"
+          - Sid: CloudWatchOwnDashboards
+            Effect: Allow
+            Action:
+              - cloudwatch:PutDashboard
+              - cloudwatch:DeleteDashboards
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+            Resource: !Sub arn:${AWS::Partition}:cloudwatch::*:dashboard/${pDashboardPrefix}*
+          - Sid: SsmDiagnosticRead
+            Effect: Allow
+            Action:
+              - ssm:Describe*
+              - ssm:Get*
+              - ssm:List*
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ai-observability
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: read-plus-diagnostic-write
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-observability permission set.
+    Value: !GetAtt rSsoPermissionSetAiObservability.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-observability
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

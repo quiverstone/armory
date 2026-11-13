@@ -1,0 +1,601 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: VPC with public/private subnets across 2 or 3 AZs, flow logs, S3 and DynamoDB gateway endpoints, and ECR interface endpoints
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: VPC Config
+        Parameters:
+          - pVpcName
+          - pVpcCidr
+          - pVpcTenancy
+          - pNumberOfAzs
+    ParameterLabels:
+      pVpcName:
+        default: Name of VPC
+      pVpcCidr:
+        default: VPC CIDR Block
+      pVpcTenancy:
+        default: Instance Tenancy
+      pNumberOfAzs:
+        default: Number of AZs to use
+
+Parameters:
+  pVpcCidr:
+    Default: 192.168.0.0/21
+    Description: CIDR block for VPC. Example 10.0.0.0/16
+    Type: String
+    AllowedPattern: "(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})/(\\d{1,2})"
+    ConstraintDescription: must be a valid IP CIDR range of the form x.x.x.x/x.
+
+  pVpcName:
+    Description: VPC name used for reference
+    Type: String
+    Default: development-main
+
+  pVpcTenancy:
+    AllowedValues:
+      - default
+      - dedicated
+    Default: default
+    Description: Instance tenancy behavior for this VPC
+    Type: String
+    ConstraintDescription: Must be one of the allowed values
+
+  pNumberOfAzs:
+    Description: Number Of Azs
+    Type: String
+    Default: "2"
+    AllowedValues:
+      - "2"
+      - "3"
+    ConstraintDescription: Must be one of the allowed values
+
+Conditions:
+  c3AzDeployment: !Equals [!Ref pNumberOfAzs, "3"]
+
+Resources:
+  rEipA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rEipB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rEipC:
+    Condition: c3AzDeployment
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rFlowLogVpc:
+    Type: AWS::EC2::FlowLog
+    DependsOn:
+      - rLogGroupFlowLogs
+      - rIamPolicyVpcFlowLogs
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt rIamRoleVpcFlowLogs.Arn
+      LogGroupName: !Sub "${pVpcName}-FlowLogs"
+      ResourceId: !Ref rVpcMain
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rInternetGatewayMain:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - vpc-igw"
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsKeyMain:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: !Sub "KMS key for ${pVpcName} Flow Logs encryption"
+      EnableKeyRotation: true
+      KeyPolicy:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          - Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+        Version: "2012-10-17"
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName}-FlowLogs-KMS"
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsAliasMain:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/${pVpcName}-FlowLogs"
+      TargetKeyId: !Ref rKmsKeyMain
+
+  rLogGroupFlowLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "${pVpcName}-FlowLogs"
+      RetentionInDays: 90
+      KmsKeyId: !Sub "arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${rKmsKeyMain}"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rLogStreamVpcFlowLogs:
+    Type: AWS::Logs::LogStream
+    DependsOn: rLogGroupFlowLogs
+    Properties:
+      LogGroupName: !Sub "${pVpcName}-FlowLogs"
+
+  rNatGatewaySubnetA:
+    Type: AWS::EC2::NatGateway
+    DependsOn: rInternetGatewayMain
+    Properties:
+      AllocationId: !GetAtt rEipA.AllocationId
+      SubnetId: !Ref rSubnetPublicA
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rNatGatewaySubnetB:
+    Type: AWS::EC2::NatGateway
+    DependsOn: rInternetGatewayMain
+    Properties:
+      AllocationId: !GetAtt rEipB.AllocationId
+      SubnetId: !Ref rSubnetPublicB
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rNatGatewaySubnetC:
+    Type: AWS::EC2::NatGateway
+    Condition: c3AzDeployment
+    DependsOn: rInternetGatewayMain
+    Properties:
+      AllocationId: !GetAtt rEipC.AllocationId
+      SubnetId: !Ref rSubnetPublicC
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleVpcFlowLogs:
+    Type: AWS::IAM::Role
+    Properties:
+      #checkov:skip=CKV_AWS_111:Will allow right to unknown log group
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Sid: AllowFlowLogs
+        Version: 2012-10-17
+      Path: /
+      RoleName: !Sub "${pVpcName}-${AWS::Region}-RoleFlowLogs"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyVpcFlowLogs:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: cloudwatchlogsrole for rIamRoleVpcFlowLogs
+      PolicyDocument:
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+            Effect: Allow
+            Resource: "*"
+        Version: 2012-10-17
+      Roles:
+        - !Ref rIamRoleVpcFlowLogs
+
+  rRoutePrivateNatGatewayA:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref rNatGatewaySubnetA
+      RouteTableId: !Ref rRouteTablePrivateA
+
+  rRoutePrivateNatGatewayB:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref rNatGatewaySubnetB
+      RouteTableId: !Ref rRouteTablePrivateB
+
+  rRoutePrivateNatGatewayC:
+    Type: AWS::EC2::Route
+    Condition: c3AzDeployment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref rNatGatewaySubnetC
+      RouteTableId: !Ref rRouteTablePrivateC
+
+  rRouteTablePublic:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: Public Route
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rRouteTablePrivateA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Route A"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rRouteTablePrivateB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Route B"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rRouteTablePrivateC:
+    Type: AWS::EC2::RouteTable
+    Condition: c3AzDeployment
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Route C"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rRouteVpcIgw:
+    Type: AWS::EC2::Route
+    DependsOn: rVpcGatewayAttachmentInternetGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref rInternetGatewayMain
+      RouteTableId: !Ref rRouteTablePublic
+
+  rSubnetPublicA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref pVpcCidr, 6, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Pubilc Subnet A"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetPublicB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref pVpcCidr, 6, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Public Subnet B"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetPublicC:
+    Type: AWS::EC2::Subnet
+    Condition: c3AzDeployment
+    Properties:
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref pVpcCidr, 6, 8]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Public Subnet C"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetPrivateA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!Ref pVpcCidr, 6, 8]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Subnet A"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetPrivateB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [4, !Cidr [!Ref pVpcCidr, 6, 8]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Subnet B"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetPrivateC:
+    Type: AWS::EC2::Subnet
+    Condition: c3AzDeployment
+    Properties:
+      AvailabilityZone: !Select [2, !GetAZs ""]
+      CidrBlock: !Select [5, !Cidr [!Ref pVpcCidr, 6, 8]]
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - Private Subnet C"
+        - Key: GitHub
+          Value: quiverstone/armory
+      VpcId: !Ref rVpcMain
+
+  rSubnetRouteTableAssociationPublicA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rRouteTablePublic
+      SubnetId: !Ref rSubnetPublicA
+
+  rSubnetRouteTableAssociationPublicB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rRouteTablePublic
+      SubnetId: !Ref rSubnetPublicB
+
+  rSubnetRouteTableAssociationPublicC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: c3AzDeployment
+    Properties:
+      RouteTableId: !Ref rRouteTablePublic
+      SubnetId: !Ref rSubnetPublicC
+
+  rSubnetRouteTableAssociationPrivateA:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rRouteTablePrivateA
+      SubnetId: !Ref rSubnetPrivateA
+
+  rSubnetRouteTableAssociationPrivateB:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rRouteTablePrivateB
+      SubnetId: !Ref rSubnetPrivateB
+
+  rSubnetRouteTableAssociationPrivateC:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Condition: c3AzDeployment
+    Properties:
+      RouteTableId: !Ref rRouteTablePrivateC
+      SubnetId: !Ref rSubnetPrivateC
+
+  rVpcMain:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: !Ref pVpcTenancy
+      Tags:
+        - Key: Name
+          Value: !Ref pVpcName
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  ## DynamoDb Endpoint for VPC utilization
+  rVpcEndpointDynamoDb:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: "*"
+            Effect: Allow
+            Principal: "*"
+            Resource: "*"
+        Version: 2012-10-17
+      RouteTableIds:
+        - !Ref rRouteTablePublic
+        - !Ref rRouteTablePrivateA
+        - !Ref rRouteTablePrivateB
+        - !If [c3AzDeployment, !Ref rRouteTablePrivateC, !Ref AWS::NoValue]
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.dynamodb"
+      VpcId: !Ref rVpcMain
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  ## S3 Endpoint for VPC utilization
+  rVpcEndpointS3:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action: "*"
+            Effect: Allow
+            Principal: "*"
+            Resource: "*"
+        Version: 2012-10-17
+      RouteTableIds:
+        - !Ref rRouteTablePublic
+        - !Ref rRouteTablePrivateA
+        - !Ref rRouteTablePrivateB
+        - !If [c3AzDeployment, !Ref rRouteTablePrivateC, !Ref AWS::NoValue]
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcId: !Ref rVpcMain
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rVpcGatewayAttachmentInternetGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref rInternetGatewayMain
+      VpcId: !Ref rVpcMain
+
+  rSecurityGroupVpcEndpoints:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: HTTPS from inside the VPC to interface endpoints
+      VpcId: !Ref rVpcMain
+      SecurityGroupIngress:
+        - Description: HTTPS from the VPC CIDR
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref pVpcCidr
+      SecurityGroupEgress:
+        - Description: Responses within the VPC
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref pVpcCidr
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcName} - VPC Endpoints"
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rVpcEndpointEcrApi:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref rVpcMain
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
+      VpcEndpointType: Interface
+      SubnetIds: !If
+        - c3AzDeployment
+        - [!Ref rSubnetPrivateA, !Ref rSubnetPrivateB, !Ref rSubnetPrivateC]
+        - [!Ref rSubnetPrivateA, !Ref rSubnetPrivateB]
+      SecurityGroupIds:
+        - !Ref rSecurityGroupVpcEndpoints
+      PrivateDnsEnabled: true
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rVpcEndpointEcrDkr:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref rVpcMain
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
+      VpcEndpointType: Interface
+      SubnetIds: !If
+        - c3AzDeployment
+        - [!Ref rSubnetPrivateA, !Ref rSubnetPrivateB, !Ref rSubnetPrivateC]
+        - [!Ref rSubnetPrivateA, !Ref rSubnetPrivateB]
+      SecurityGroupIds:
+        - !Ref rSecurityGroupVpcEndpoints
+      PrivateDnsEnabled: true
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oRouteTablePublic:
+    Description: Route Table Public
+    Value: !Ref rRouteTablePublic
+    Export:
+      Name: !Sub ${AWS::StackName}-oRouteTablePublic
+
+  oRouteTablePrivateA:
+    Description: Route Table PrivateA
+    Value: !Ref rRouteTablePrivateA
+    Export:
+      Name: !Sub ${AWS::StackName}-oRouteTablePrivateA
+
+  oRouteTablePrivateB:
+    Description: Route Table PrivateB
+    Value: !Ref rRouteTablePrivateB
+    Export:
+      Name: !Sub ${AWS::StackName}-oRouteTablePrivateB
+
+  oRouteTablePrivateC:
+    Description: Route Table PrivateC
+    Value: !If [c3AzDeployment, !Ref rRouteTablePrivateC, Unused]
+    Export:
+      Name: !Sub ${AWS::StackName}-oRouteTablePrivateC
+
+  oSubnetPublicA:
+    Description: Subnet PublicA
+    Value: !Ref rSubnetPublicA
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPublicA
+
+  oSubnetPublicB:
+    Description: Subnet PublicB
+    Value: !Ref rSubnetPublicB
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPublicB
+
+  oSubnetPublicC:
+    Description: Subnet PublicC
+    Value: !If [c3AzDeployment, !Ref rSubnetPublicC, Unused]
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPublicC
+
+  oSubnetPrivateA:
+    Description: Subnet PrivateA
+    Value: !Ref rSubnetPrivateA
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPrivateA
+
+  oSubnetPrivateB:
+    Description: Subnet PrivateB
+    Value: !Ref rSubnetPrivateB
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPrivateB
+
+  oSubnetPrivateC:
+    Description: Subnet PrivateC
+    Value: !If [c3AzDeployment, !Ref rSubnetPrivateC, Unused]
+    Export:
+      Name: !Sub ${AWS::StackName}-oSubnetPrivateC
+
+  oVpc:
+    Description: VPC
+    Value: !Ref rVpcMain
+    Export:
+      Name: !Sub ${AWS::StackName}-oVpc

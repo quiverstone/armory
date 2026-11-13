@@ -1,0 +1,267 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-operator-guardrailed): broad
+  operational access (AdministratorAccess) minus an explicit destructive-action
+  Deny guardrail. It can operate across services but is blocked from ruining
+  production:
+  identity/org/SSO escalation, audit/detective tampering, KMS destruction, and
+  data-store / network teardown are all DENIED. Highest-privilege AI set; grant
+  sparingly via TEAM with tight approval scope.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-operator-guardrailed
+    Tier: operator-guardrailed
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-operator-guardrailed.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: restricted
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag (highest-privilege set).
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+Resources:
+  rSsoPermissionSetAiOperatorGuardrailed:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-operator-guardrailed
+      Description: "AI operator (guardrailed): AdministratorAccess minus destructive-action Deny."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyIdentityAndPrivilegeEscalation
+            Effect: Deny
+            Action:
+              - iam:CreateUser
+              - iam:UpdateUser
+              - iam:DeleteUser
+              - iam:CreateAccessKey
+              - iam:UpdateAccessKey
+              - iam:DeleteAccessKey
+              - iam:CreateLoginProfile
+              - iam:UpdateLoginProfile
+              - iam:DeleteLoginProfile
+              - iam:CreateGroup
+              - iam:DeleteGroup
+              - iam:AddUserToGroup
+              - iam:AttachUserPolicy
+              - iam:AttachGroupPolicy
+              - iam:PutUserPolicy
+              - iam:PutGroupPolicy
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:UpdateAssumeRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:CreatePolicy
+              - iam:DeletePolicy
+              - iam:CreatePolicyVersion
+              - iam:SetDefaultPolicyVersion
+              - iam:CreateSAMLProvider
+              - iam:UpdateSAMLProvider
+              - iam:DeleteSAMLProvider
+              - iam:CreateOpenIDConnectProvider
+              - iam:DeleteOpenIDConnectProvider
+              - iam:UpdateAccountPasswordPolicy
+              - iam:DeleteAccountPasswordPolicy
+              - iam:UpdateRole
+              - iam:PutRolePermissionsBoundary
+              - iam:DeleteRolePermissionsBoundary
+              - iam:PutUserPermissionsBoundary
+              - iam:DeleteUserPermissionsBoundary
+              - iam:DeletePolicyVersion
+              - iam:CreateServiceSpecificCredential
+              - iam:UploadSSHPublicKey
+              - iam:UploadSigningCertificate
+              - iam:DeactivateMFADevice
+              - iam:DeleteVirtualMFADevice
+            Resource: "*"
+          - Sid: DenyOrgAndSsoControl
+            Effect: Deny
+            Action:
+              - organizations:*
+              - account:CloseAccount
+              - account:PutAlternateContact
+              - account:PutContactInformation
+              - sso:*
+              - identitystore:Create*
+              - identitystore:Update*
+              - identitystore:Delete*
+            Resource: "*"
+          - Sid: DenyAuditAndDetectiveTampering
+            Effect: Deny
+            Action:
+              - cloudtrail:StopLogging
+              - cloudtrail:DeleteTrail
+              - cloudtrail:UpdateTrail
+              - cloudtrail:PutEventSelectors
+              - cloudtrail:DeleteEventDataStore
+              - config:DeleteConfigurationRecorder
+              - config:StopConfigurationRecorder
+              - config:DeleteDeliveryChannel
+              - config:DeleteConfigRule
+              - config:DeleteOrganizationConfigRule
+              - guardduty:DeleteDetector
+              - guardduty:DisassociateFromMasterAccount
+              - guardduty:UpdateDetector
+              - securityhub:DisableSecurityHub
+              - securityhub:DeleteMembers
+              - securityhub:DisassociateFromAdministratorAccount
+              - access-analyzer:DeleteAnalyzer
+              - inspector2:Disable
+            Resource: "*"
+          - Sid: DenyKmsAndSecretDestruction
+            Effect: Deny
+            Action:
+              - kms:ScheduleKeyDeletion
+              - kms:DisableKey
+              - kms:DisableKeyRotation
+              - kms:PutKeyPolicy
+              - kms:DeleteAlias
+              - kms:DeleteImportedKeyMaterial
+              - secretsmanager:DeleteSecret
+              - secretsmanager:PutResourcePolicy
+            Resource: "*"
+          - Sid: DenyDataStoreAndBackupTeardown
+            Effect: Deny
+            Action:
+              - s3:DeleteBucket
+              - s3:PutBucketPolicy
+              - s3:PutBucketPublicAccessBlock
+              - s3:PutBucketAcl
+              - dynamodb:DeleteTable
+              - dynamodb:DeleteBackup
+              - rds:DeleteDBInstance
+              - rds:DeleteDBCluster
+              - rds:DeleteDBClusterSnapshot
+              - rds:DeleteDBSnapshot
+              - rds:ModifyDBInstance
+              - ec2:DeleteVolume
+              - ec2:DeleteSnapshot
+              - elasticfilesystem:DeleteFileSystem
+              - backup:DeleteBackupVault
+              - backup:DeleteRecoveryPoint
+              - backup:PutBackupVaultAccessPolicy
+              - glacier:DeleteVault
+            Resource: "*"
+          - Sid: DenyNetworkAndComputeProdTeardown
+            Effect: Deny
+            Action:
+              - ec2:DeleteVpc
+              - ec2:DeleteSubnet
+              - ec2:DeleteInternetGateway
+              - ec2:DeleteNatGateway
+              - ec2:DeleteRouteTable
+              - ec2:DeleteTransitGateway
+              - ec2:DeleteVpcPeeringConnection
+              - ec2:TerminateInstances
+              - elasticloadbalancing:DeleteLoadBalancer
+              - route53:DeleteHostedZone
+              - cloudfront:DeleteDistribution
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ai-operator-guardrailed
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: operator-guardrailed
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-operator-guardrailed permission set.
+    Value: !GetAtt rSsoPermissionSetAiOperatorGuardrailed.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-operator-guardrailed
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

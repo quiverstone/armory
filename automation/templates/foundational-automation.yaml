@@ -1,0 +1,527 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Foundational (GitHub) Automation Configuration
+
+Metadata:
+  metaTemplateInfo:
+    Name: foundational-automation-configuration
+    Description: Foundational Organization Security Resource Deployment
+    Version: 1.0.0
+    Source: armory/automation/templates/foundational-automation.yaml
+    Note: Deploys core automation resources and configuration to the management account
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pGitHubOrganization:
+    Type: String
+    Description: The GitHub Organization
+
+Resources:
+  rIamOidcProviderMain:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+      Url: https://token.actions.githubusercontent.com
+      Tags:
+        - Key: Name
+          Value: GitHubActions
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleDeploy:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-mgmt-deploy
+      Description: Primary Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PrimaryGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !GetAtt rIamOidcProviderMain.Arn
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # admin access only from the default branch or a protected GitHub environment
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${pGitHubOrganization}/*:ref:refs/heads/main
+                  - !Sub repo:${pGitHubOrganization}/*:environment:*
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleDeliver:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-mgmt-deliver
+      Description: Deliver Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DeliverGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !GetAtt rIamOidcProviderMain.Arn
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${pGitHubOrganization}/*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleRead:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: github-mgmt-read
+      Description: Read Role for use in GitHub Actions
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadGitHubActionsRole
+            Effect: Allow
+            Principal:
+              Federated: !GetAtt rIamOidcProviderMain.Arn
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${pGitHubOrganization}/*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/ReadOnlyAccess
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketAccessLogs:
+    Type: AWS::S3::Bucket
+    # checkov:skip=CKV_AWS_18: Access Logs - Will not collect access logs on access logs
+    # checkov:skip=CKV_AWS_21: Logging Bucket - No Versioning Required
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${AWS::AccountId}-foundation-iac-access-logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketAsset:
+    Type: AWS::S3::Bucket
+    # checkov:skip=CKV_AWS_54: Public Policy Allow
+    # checkov:skip=CKV_AWS_56: Public Bucket Allow
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${AWS::AccountId}-foundation-iac
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogs
+        LogFilePrefix: access-logs/
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyAsset:
+    Type: AWS::S3::BucketPolicy
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F16
+            reason: Bucket has condition only allowing principals from within current organization
+    Properties:
+      Bucket: !Ref rS3BucketAsset
+      PolicyDocument:
+        Id: OrgIDRestriction
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketAsset}
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketAsset}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: OrgGetObject
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketAsset}/*
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketAsset}
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Sub
+                  - ${OrgID}
+                  - OrgID: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+          - Sid: DenyBucketDeletion
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Action: s3:DeleteBucket
+            Resource: !GetAtt rS3BucketAsset.Arn
+
+  rIamRoleSsmAutomations:
+    Type: AWS::IAM::Role
+    # checkov:skip=CKV_AWS_108: Potential Data exfiltration
+    # checkov:skip=CKV_AWS_111: Write without constraints
+    Properties:
+      RoleName: update-organization-parameters
+      Description: Role Required to create or update SSM Parameters
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicySsmAutomations:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: update-organization-parameters for rIamRoleSsmAutomations
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: SSMParams
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:DescribeParameters
+              - ssm:GetParametersByPath
+              - ssm:GetParameters
+              - ssm:GetParameter
+              - ssm:DeleteParameters
+              - ssm:AddTagsToResource
+              - ssm:RemoveTagsFromResource
+            Resource: "*"
+          - Sid: OrgActions
+            Effect: Allow
+            Action:
+              - organizations:List*
+              - organizations:Describe*
+            Resource: "*"
+      # ManagedPolicyArns:
+      #   - ""
+      Roles:
+        - !Ref rIamRoleSsmAutomations
+
+  rSsmDocumentUpdateOrgParams:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicySsmAutomations
+    Properties:
+      DocumentType: Automation
+      Name: update-organization-parameters
+      Content:
+        description: Python to update organization parameters
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleSsmAutomations.Arn
+        mainSteps:
+          - name: update_organization_parameters
+            description: Update Organization Details in SSM Parameters
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: main
+              Script: |-
+                import re
+                import boto3
+
+                def create_ssm_parameter(ssm_client, name, value):
+                  try:
+                    ssm_client.put_parameter(
+                      Name=name,
+                      Value=value,
+                      Type="String",
+                      Overwrite=True
+                    )
+                    print(f"Successfully created SSM parameter: {name}")
+
+                    ssm_client.add_tags_to_resource(
+                      ResourceType="Parameter",
+                      ResourceId=name,
+                      Tags=[
+                          {"Key": "creator", "Value": "quiverstone"},
+                      ],
+                    )
+                    print(f"Successfully tagged SSM parameter: {name}")
+                  except Exception as e:
+                    print(f"Failed to create or tag SSM parameter {name}: {e}")
+
+                def delete_ssm_parameters(ssm_client):
+                  try:
+                    paginator = ssm_client.get_paginator("describe_parameters")
+                    for page in paginator.paginate():
+                      for param in page["Parameters"]:
+                        name = param["Name"]
+                        if name.startswith("/automation/reference/org/"):
+                          tags = ssm_client.list_tags_for_resource(
+                            ResourceType="Parameter", ResourceId=name
+                          )
+                          if any(
+                            tag["Key"] == "creator" and tag["Value"] == "quiverstone"
+                            for tag in tags["TagList"]
+                          ):
+                            ssm_client.delete_parameter(Name=name)
+                            print(f"Deleted parameter: {name}")
+                  except Exception as e:
+                    print(f"Failed to delete parameters: {e}")
+
+                def delete_specific_parameters(ssm_client, parameter_names):
+                  for param_name in parameter_names:
+                    try:
+                      ssm_client.delete_parameter(Name=param_name)
+                      print(f"Successfully deleted parameter: {param_name}")
+                    except ssm_client.exceptions.ParameterNotFound:
+                      print(f"Parameter not found, skipping deletion: {param_name}")
+                    except Exception as e:
+                      print(f"Failed to delete parameter {param_name}: {e}")
+
+                def sanitize_parameter_name(name):
+                  sanitized_name = re.sub(r"[^a-zA-Z0-9._/-]", "-", name)
+                  if sanitized_name.lower().startswith("ssm"):
+                    sanitized_name = sanitized_name.replace("ssm", "param", 1)
+                  return sanitized_name
+
+                def list_all_organizational_units(org_client, parent_id, path_prefix="Root"):
+                  all_ous = []
+
+                  def recursive_list_ous(parent_id, path):
+                    paginator = org_client.get_paginator("list_organizational_units_for_parent")
+                    for page in paginator.paginate(ParentId=parent_id):
+                      for ou in page["OrganizationalUnits"]:
+                        ou_name = sanitize_parameter_name(ou["Name"])
+                        ou_id = ou["Id"]
+                        full_path = f"{path}/{ou_name}"
+                        all_ous.append((ou_id, full_path))
+                        # Recursively process child OUs
+                        recursive_list_ous(ou_id, full_path)
+
+                  # Start recursion with the provided root ID
+                  recursive_list_ous(parent_id, path_prefix)
+                  return all_ous
+
+                def get_current_region():
+                  session = boto3.Session()
+                  current_region = session.region_name
+                  if not current_region:
+                      raise ValueError("AWS region is not configured.")
+                  return current_region
+
+                def get_current_account_id():
+                  sts_client = boto3.client('sts')
+                  try:
+                    response = sts_client.get_caller_identity()
+                    account_id = response.get('Account')
+                    if account_id:
+                      print(f"Current AWS Account ID: {account_id}")
+                      return account_id
+                    else:
+                      print("Account ID not found in the response.")
+                      return None
+                  except Exception as e:
+                    print(f"An error occurred while retrieving the account ID: {e}")
+                    return None
+
+                def main(event, context):
+                  org_client = boto3.client("organizations")
+                  ssm_client = boto3.client("ssm")
+
+                  # Delete existing parameters created by this script
+                  delete_ssm_parameters(ssm_client)
+
+                  # Delete specific parameters
+                  specific_parameters = [
+                    "/automation/reference/org/home-region",
+                    "/automation/reference/assets-bucket"
+                  ]
+                  delete_specific_parameters(ssm_client, specific_parameters)
+
+                  # Get the Organization ID
+                  org_info = org_client.describe_organization()
+                  org_id = org_info["Organization"]["Id"]
+                  create_ssm_parameter(ssm_client, "/automation/reference/org/OrganizationId", org_id)
+
+                  # Get the Root OU
+                  roots = org_client.list_roots()
+                  root_ou_id = roots["Roots"][0]["Id"]
+                  create_ssm_parameter(ssm_client, "/automation/reference/org/ou/Root", root_ou_id)
+
+                  # Get all Organizational Units (OUs) recursively and their IDs
+                  all_ous = list_all_organizational_units(org_client, root_ou_id)
+                  for ou_id, ou_path in all_ous:
+                    create_ssm_parameter(
+                      ssm_client, f"/automation/reference/org/ou{ou_path}", ou_id
+                    )
+
+                  # Get all Accounts
+                  paginator = org_client.get_paginator("list_accounts")
+                  for page in paginator.paginate():
+                    for account in page["Accounts"]:
+                      account_name = sanitize_parameter_name(account["Name"])
+                      account_id = account["Id"]
+                      create_ssm_parameter(
+                        ssm_client,
+                        f"/automation/reference/org/account/{account_name}",
+                        account_id,
+                      )
+
+                  # Define the assets S3 bucket name
+                  base_bucket_name = "foundation-iac"
+                  current_acct = get_current_account_id()
+
+                  # Prepend the account ID to the bucket name
+                  assets_bucket_name = f"{current_acct}-{base_bucket_name}"
+                  create_ssm_parameter(
+                    ssm_client,
+                    "/automation/reference/assets-bucket",
+                    assets_bucket_name,
+                  )
+
+                  # Define the home region
+                  home_region = get_current_region()
+                  create_ssm_parameter(
+                    ssm_client,
+                    "/automation/reference/org/home-region",
+                    home_region,
+                  )
+
+                if __name__ == "__main__":
+                  main()
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleOrgParamsUpdate:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicySsmAutomations
+    Properties:
+      Name: OrganizationAccountAndOUChangesSchedule
+      Description: Scheduled update for account and OU creation or modification events
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "update-organization-parameters"}'
+        RoleArn: !GetAtt rIamRoleSsmAutomations.Arn
+  # OrgParamsUpdateEventBridgeRule:
+  #   Type: AWS::Events::Rule
+  #   Properties:
+  #     Name: OrganizationAccountAndOUChangesTrigger
+  #     Description: Monitors AWS Organizations for account and OU creation or modification events
+  #     EventPattern:
+  #       source:
+  #         - aws.organizations
+  #       detail-type:
+  #         - AWS API Call via CloudTrail
+  #       detail:
+  #         eventSource:
+  #           - organizations.amazonaws.com
+  #         eventName:
+  #           - CreateAccount
+  #           - CreateOrganizationalUnit
+  #           - UpdateOrganizationalUnit
+  #           - MoveAccount
+  #           - CloseAccount
+  #     State: ENABLED
+  #     Targets:
+  #       - Arn: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/update-organization-parameters
+  #         RoleArn: !GetAtt SsmAutomationsRole.Arn
+  #         Id: OrganizationAccountAndOUChangesTrigger
+
+Outputs:
+  oDeployRoleArn:
+    Description: ARN of GitHub Actions Deploy Role
+    Value: !GetAtt rIamRoleDeploy.Arn
+    Export:
+      Name: DeployRoleARN
+
+  oDeliverRoleArn:
+    Description: ARN of GitHub Actions Deliver Role
+    Value: !GetAtt rIamRoleDeliver.Arn
+    Export:
+      Name: DeliverRoleARN
+
+  oReadRoleArn:
+    Description: ARN of GitHub Actions Read Role
+    Value: !GetAtt rIamRoleRead.Arn
+    Export:
+      Name: ReadRoleARN
+
+  oIdpArn:
+    Description: ARN of Github OIDC Provider
+    Value: !GetAtt rIamOidcProviderMain.Arn
+    Export:
+      Name: GitHubOidcIdpARN
+
+  oAssetBucketUrl:
+    Value: !Sub https://${rS3BucketAsset.DomainName}
+    Description: Endpoint URL for Asset Bucket
+    Export:
+      Name: !Sub ${AWS::StackName}-oAssetBucketUrl

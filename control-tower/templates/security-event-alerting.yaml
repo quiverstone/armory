@@ -1,0 +1,285 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Organization Security Events Alerting
+
+Metadata:
+  metaTemplateInfo:
+    Name: security-event-alerting
+    Description: CloudWatch alarms and SNS notifications for security events including root account usage, unauthorized API calls, console sign-in failures, CloudTrail configuration changes, IAM access key creation, and exposed access keys
+    Deploy-To: Management Account Home Region
+    Version: 1.0.0
+    Source: armory/control-tower/templates/security-event-alerting.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20251024
+    Nonce: 20251024
+
+Parameters:
+  pAlertEmail:
+    Type: String
+    Description: Email address for SNS notifications
+    AllowedPattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+    ConstraintDescription: Must match ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+
+  pCloudTrailLogGroupName:
+    Type: String
+    Description: CloudTrail log group name for metric filters
+    Default: aws-controltower/CloudTrailLogs
+
+Resources:
+
+  # SNS Topic for Alarms
+  rKmsKeyAlarmNotification:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: KMS key for encrypting SNS alarm notifications
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Allow administration of the key
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:aws:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: Allow SNS to use the key
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: '*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:*'
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsAliasAlarmNotification:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/security-event-sns-key
+      TargetKeyId: !Ref rKmsKeyAlarmNotification
+
+  rSnsTopicCloudTrailAlarm:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: security-event-alarm-notifications
+      DisplayName: CloudWatch Alarm Notifications
+      KmsMasterKeyId: !Ref rKmsKeyAlarmNotification
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref pAlertEmail
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  # Metric Filter - Example: Root Account Usage
+  rMetricFilterRootAccountUsage:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{ $.userIdentity.type = "Root" && $.userIdentity.invokedBy NOT EXISTS && $.eventType != "AwsServiceEvent" }'
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      MetricTransformations:
+        - MetricName: RootAccountUsageCount
+          MetricNamespace: CloudTrailMetrics
+          MetricValue: '1'
+          DefaultValue: 0
+
+  # CloudWatch Alarm for Root Account Usage
+  rCwAlarmRootAccountUsage:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CloudTrail-RootAccountUsage
+      AlarmDescription: Alarm when root account is used
+      MetricName: RootAccountUsageCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  # Metric Filter - Unauthorized API Calls
+  rMetricFilterUnauthorizedApiCalls:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{ ($.errorCode = "*UnauthorizedOperation") || ($.errorCode = "AccessDenied*") }'
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      MetricTransformations:
+        - MetricName: UnauthorizedAPICallsCount
+          MetricNamespace: CloudTrailMetrics
+          MetricValue: '1'
+          DefaultValue: 0
+
+  rCwAlarmUnauthorizedApiCalls:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CloudTrail-UnauthorizedAPICalls
+      AlarmDescription: Alarm for multiple unauthorized API calls
+      MetricName: UnauthorizedAPICallsCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  # Metric Filter - Console Sign-in Failures
+  rMetricFilterConsoleSignInFailures:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{ ($.eventName = ConsoleLogin) && ($.errorMessage = "Failed authentication") }'
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      MetricTransformations:
+        - MetricName: ConsoleSignInFailureCount
+          MetricNamespace: CloudTrailMetrics
+          MetricValue: '1'
+          DefaultValue: 0
+
+  rCwAlarmConsoleSignInFailures:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CloudTrail-ConsoleSignInFailures
+      AlarmDescription: Alarm for multiple console sign-in failures
+      MetricName: ConsoleSignInFailureCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rMetricFilterCloudTrailChange:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{ ($.eventName = CreateTrail) || ($.eventName = UpdateTrail) || ($.eventName = DeleteTrail) || ($.eventName = StartLogging) || ($.eventName = StopLogging) }'
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      MetricTransformations:
+        - MetricName: CloudTrailConfigChangeCount
+          MetricNamespace: CloudTrailMetrics
+          MetricValue: '1'
+          DefaultValue: 0
+
+  rCwAlarmCloudTrailChange:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CloudTrail-ConfigurationChanges
+      AlarmDescription: Alarm when CloudTrail configuration is changed
+      MetricName: CloudTrailConfigChangeCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rMetricFilterIamCreateAccessKey:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{ ($.eventName = CreateAccessKey) }'
+      LogGroupName: !Ref pCloudTrailLogGroupName
+      MetricTransformations:
+        - MetricName: NewAccessKeyCreatedCount
+          MetricNamespace: CloudTrailMetrics
+          MetricValue: '1'
+          DefaultValue: 0
+
+  rCwAlarmIamCreateAccessKey:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: CloudTrail-IAMAccessKeyCreated
+      AlarmDescription: Alarm when new IAM access keys are created
+      MetricName: NewAccessKeyCreatedCount
+      Namespace: CloudTrailMetrics
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rCwAlarmTaExposedAccessKeysYellow:
+    ## https://docs.aws.amazon.com/awssupport/latest/user/trusted-advisor-check-reference.html#exposed-access-keys
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: Exposed Access Keys (Trusted Advisor - Yellow)
+      AlarmDescription: Yellow - Exposed Access Keys
+      Namespace: AWS/TrustedAdvisor
+      MetricName: YellowResources
+      Dimensions:
+        - Name: CheckName
+          Value: Exposed Access Keys
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rCwAlarmTaExposedAccessKeysRed:
+    ## https://docs.aws.amazon.com/awssupport/latest/user/trusted-advisor-check-reference.html#exposed-access-keys
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: Exposed Access Keys (Trusted Advisor - Red)
+      AlarmDescription: Red - Exposed Access Keys
+      Namespace: AWS/TrustedAdvisor
+      MetricName: RedResources
+      Dimensions:
+        - Name: CheckName
+          Value: Exposed Access Keys
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: 1
+      Period: 60
+      Statistic: Sum
+      Threshold: 1
+      AlarmActions:
+        - !Ref rSnsTopicCloudTrailAlarm
+      TreatMissingData: notBreaching
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory

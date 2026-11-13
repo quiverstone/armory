@@ -1,0 +1,152 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for enabling termination protection on CloudFormation stacks
+
+Metadata:
+  metaTemplateInfo:
+    Name: cfn-enable-termination-protection
+    Description: Automation for enabling termination protection on CloudFormation stacks
+    Version: 1.0.0
+    Source: armory/cloudformation/templates/cfn-enable-termination-protection.yaml
+    Note: Deploy to all accounts (in active regions) to enable termination protection on all stacks
+    Security Hub: CloudFormation.3
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "cfn-termination-protect-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: cfn-termination-protect-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: CloudFormationTerminationProtection
+            Effect: Allow
+            Action:
+              - cloudformation:ListStacks
+              - cloudformation:DescribeStacks
+              - cloudformation:UpdateTerminationProtection
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentCfnTerminationProtect:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: cfn-enable-termination-protection
+      Content:
+        description: Python to Enable Termination Protection on CloudFormation Stacks
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: enable_termination_protection
+            description: Enables termination protection on all CloudFormation stacks in Region
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: cfn_termination_protect_handler
+              Script: |-
+                import boto3
+
+                ACTIVE_STATUSES = [
+                  "CREATE_COMPLETE",
+                  "UPDATE_COMPLETE",
+                  "UPDATE_ROLLBACK_COMPLETE",
+                  "IMPORT_COMPLETE",
+                  "IMPORT_ROLLBACK_COMPLETE",
+                ]
+
+                def cfn_termination_protect_handler(events, context):
+                  cfn = boto3.client("cloudformation")
+                  updated = []
+                  skipped = []
+                  paginator = cfn.get_paginator("list_stacks")
+                  for page in paginator.paginate(StackStatusFilter=ACTIVE_STATUSES):
+                    for stack in page["StackSummaries"]:
+                      if stack.get("ParentId"):
+                        continue
+                      if stack["StackName"].startswith("StackSet-"):
+                        continue
+                      stack_name = stack["StackName"]
+                      detail = cfn.describe_stacks(StackName=stack_name)["Stacks"][0]
+                      if detail["EnableTerminationProtection"]:
+                        skipped.append(stack_name)
+                        continue
+                      cfn.update_termination_protection(
+                        EnableTerminationProtection=True,
+                        StackName=stack_name,
+                      )
+                      updated.append(stack_name)
+                      print("Enabled termination protection on: {}".format(stack_name))
+                  print("Updated: {}, Already protected: {}".format(len(updated), len(skipped)))
+                  return {"updated": updated, "skipped_count": len(skipped)}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleCfnTerminationProtect:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: cfn-enable-termination-protection
+      Description: Schedule the enabling of termination protection on CloudFormation stacks
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "cfn-enable-termination-protection"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

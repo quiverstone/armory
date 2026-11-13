@@ -1,0 +1,169 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: VPC Flow Logs for previously deployed VPC
+
+Metadata:
+  metaTemplateInfo:
+    Name: vpc-flow-logs
+    Description: VPC Flow Logs for previously deployed VPC with S3 bucket as destination
+    Version: 1.0.0
+    Source: armory/vpc/templates/vpc-flow-logs.yaml
+    Note: Deploy (in workload account(s)) as needed for specific service logs needing to be replicated archive bucket.
+    Security Hub: EC2.6
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pVpcId:
+    Type: String
+    Description: ID of the VPC to monitor with flow logs
+
+  pLogBucketName:
+    Type: String
+    Description: Name of the S3 bucket where flow logs will be stored
+
+  pLogPrefix:
+    Type: String
+    Description: Prefix for flow logs in the S3 bucket
+    Default: vpc-flow-logs/
+
+  pTrafficType:
+    Type: String
+    Description: Type of traffic to log
+    Default: ALL
+    AllowedValues:
+      - ACCEPT
+      - REJECT
+      - ALL
+    ConstraintDescription: Must be one of the allowed values
+
+  pMaxAggregationInterval:
+    Type: Number
+    Description: Maximum interval in seconds for capturing and aggregating flows (60 or 600)
+    Default: 600
+    AllowedValues:
+      - 60
+      - 600
+    ConstraintDescription: Must be one of the allowed values
+
+  pRetentionInDays:
+    Type: Number
+    Description: Number of days to retain log data in CloudWatch Logs (0 = never expire)
+    Default: 7
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+      - 400
+      - 545
+      - 731
+      - 1827
+      - 3653
+    ConstraintDescription: Must be one of the allowed values
+
+Resources:
+  rIamRoleFlowLog:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyFlowLog:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: FlowLogsPolicy for rIamRoleFlowLog
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+            Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${pLogBucketName}/${pLogPrefix}*"
+      Roles:
+        - !Ref rIamRoleFlowLog
+
+  rLogGroupVpcFlow:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+      LogGroupName: !Sub "/aws/vpc-flow-logs/${pVpcId}"
+      RetentionInDays: !Ref pRetentionInDays
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rFlowLogToS3:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceId: !Ref pVpcId
+      ResourceType: VPC
+      TrafficType: !Ref pTrafficType
+      LogDestinationType: s3
+      LogDestination: !Sub "arn:${AWS::Partition}:s3:::${pLogBucketName}/${pLogPrefix}"
+      MaxAggregationInterval: !Ref pMaxAggregationInterval
+      Tags:
+        - Key: Name
+          Value: !Sub "${pVpcId}-flowlogs"
+        - Key: CreatedBy
+          Value: CloudFormation
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rFlowLogToCw:
+    Type: AWS::EC2::FlowLog
+    DependsOn: rIamPolicyFlowLog
+    Properties:
+      ResourceId: !Ref pVpcId
+      ResourceType: VPC
+      TrafficType: !Ref pTrafficType
+      LogGroupName: !Ref rLogGroupVpcFlow
+      DeliverLogsPermissionArn: !GetAtt rIamRoleFlowLog.Arn
+      MaxAggregationInterval: !Ref pMaxAggregationInterval
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oFlowLogRoleArn:
+    Description: ARN of the IAM role created for Flow Logs
+    Value: !GetAtt rIamRoleFlowLog.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oFlowLogRoleArn
+
+  oVpcFlowLogCloudWatchGroup:
+    Description: CloudWatch Log Group for VPC Flow Logs
+    Value: !Ref rLogGroupVpcFlow
+    Export:
+      Name: !Sub ${AWS::StackName}-oVpcFlowLogCloudWatchGroup
+
+  oVpcFlowLogS3Path:
+    Description: S3 path where flow logs are stored
+    Value: !Sub "s3://${pLogBucketName}/${pLogPrefix}"
+    Export:
+      Name: !Sub ${AWS::StackName}-oVpcFlowLogS3Path

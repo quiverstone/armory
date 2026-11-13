@@ -1,0 +1,105 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Shared KMS Key for central AWS Config Recorder
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-kms-key
+    Description: KMS key for cross-account Config in the Audit account
+    Deploy-To: Audit Account Home Region
+    Version: 1.0.0
+    Original-Source: https://github.com/cloud-foundations-on-aws/cloud-foundations-templates/tree/main/logging/centralized-logging-kms-key-config
+    Source: armory/config/templates/org-config-kms-key.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241214
+    Nonce: 20241214
+
+Parameters:
+  pKeyAliasName:
+    Description: Alias for the KMS key
+    Type: String
+    Default: alias/org-config-service
+    AllowedPattern: ^alias/[a-zA-Z0-9/_-]+$
+    ConstraintDescription: Must start with alias/ and use letters, digits, / _ -
+
+Resources:
+  rKmsKeyConfig:
+    Type: AWS::KMS::Key
+    # checkov:skip=CKV_AWS_33: Wildcard Principal - Required for all-org accounts access
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: KMS key for the central AWS Config recorder in the Audit account
+      Enabled: true
+      EnableKeyRotation: true
+      MultiRegion: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: KeyPolicy-ConfigKMSKey
+        Statement:
+          - Sid: AllowRootAccountAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - kms:*
+            Resource: "*"
+          - Sid: AllowAWSConfigServiceAccess
+            Effect: Allow
+            Principal:
+              Service: config.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Sub
+                  - ${OrgID}
+                  - OrgID: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+          - Sid: AllowOrganizationAccountsAWSConfigAccess
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub
+                    - ${MgmtId}
+                    - MgmtId: "{{resolve:ssm:/automation/reference/org/account/Management}}"
+                - !Sub
+                    - ${LogId}
+                    - LogId: "{{resolve:ssm:/automation/reference/org/account/Log-Archive}}"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:DescribeKey
+            Resource: "*"
+      Tags:
+        - Key: Purpose
+          Value: Config Service
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsAliasConfig:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Ref pKeyAliasName
+      TargetKeyId: !Ref rKmsKeyConfig
+
+Outputs:
+  oConfigKmsKeyId:
+    Description: The ID of the KMS key for the AWS Config Recorder.
+    Value: !Ref rKmsKeyConfig
+    Export:
+      Name: org-config-kms-key-id
+
+  oConfigKmsKeyArn:
+    Description: The ARN of the KMS key for the AWS Config Recorder.
+    Value: !GetAtt rKmsKeyConfig.Arn
+    Export:
+      Name: org-config-kms-key-arn

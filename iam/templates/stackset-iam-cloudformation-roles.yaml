@@ -1,0 +1,92 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CloudFormation Stackset Admin and Execution Roles
+
+Metadata:
+  metaTemplateInfo:
+    Name: stackset-iam-cloudformation-roles
+    Description: CloudFormation Stackset Admin and Execution Roles
+    Version: 1.0.0
+    Source: armory/iam/templates/stackset-iam-cloudformation-roles.yaml
+    Note: Deploy required roles with trusts for self-managed StackSets
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pAdministratorAccountId:
+    Description: Account ID for support account assume role
+    Type: String
+    AllowedPattern: ^\d{12}$
+    ConstraintDescription: Must be a 12-digit AWS account ID
+
+  pDeploymentOUs:
+    Description: Which ORG OU(s) is this deploying to
+    Type: String
+    MinLength: 6
+
+  pHomeRegion:
+    Description: Home Control Tower and Central Security Hub Region
+    Type: String
+    MinLength: 8
+    AllowedPattern: ^[a-z]{2}(-gov)?-[a-z]+-\d$
+    ConstraintDescription: Must be an AWS region code such as us-east-2
+
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Conditions:
+  cIsHomeRegion: !Equals [!Ref AWS::Region, !Ref pHomeRegion] ## only launch global resources in single/home region
+
+Resources:
+  rStackCloudFormationAdminRole:
+    Condition: cIsHomeRegion
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://s3.us-east-2.amazonaws.com/armory.quiverstone.io/iam/templates/role-cloudformation-admin.yaml
+      Parameters:
+        pAdministratorAccountId: !Ref pAdministratorAccountId
+        pNonceValue: !Ref pNonceValue
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rStackSetCloudFormationExecutionRole:
+    Condition: cIsHomeRegion
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: role-cloudformation-execution
+      Description: CloudFormation Execution Role - DO NOT DELETE - Role for self-managed CloudFormation StackSets
+      PermissionModel: SERVICE_MANAGED
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_AUTO_EXPAND
+      OperationPreferences:
+        MaxConcurrentPercentage: 100
+        FailureTolerancePercentage: 100
+        RegionConcurrencyType: PARALLEL
+      StackInstancesGroup:
+        - Regions:
+            - !Ref pHomeRegion
+          DeploymentTargets:
+            OrganizationalUnitIds:
+              - !Ref pDeploymentOUs
+      Parameters:
+        - ParameterKey: pAdministratorAccountId
+          ParameterValue: !Ref pAdministratorAccountId
+        - ParameterKey: pNonceValue
+          ParameterValue: !Ref pNonceValue
+      TemplateURL: https://s3.us-east-2.amazonaws.com/armory.quiverstone.io/iam/templates/role-cloudformation-execution.yaml
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

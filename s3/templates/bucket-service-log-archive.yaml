@@ -1,0 +1,251 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Configure a service specific S3 bucket for the Log Archive account.
+
+Metadata:
+  metaTemplateInfo:
+    Name: bucket-service-log-archive
+    Description: Configure a service specific S3 bucket for the Log Archive account.
+    Version: 1.0.0
+    Source: armory/s3/templates/bucket-service-log-archive.yaml
+    Note: Deploy (in Log Archive Accout) as needed for specific service logs needing to be archived.
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pOrganizationId:
+    Type: String
+    Description: Identifier for the whole organization to be able to use this bucket.
+
+  pSseAlgorithm:
+    Type: String
+    Default: AES256
+    Description: S3 bucket SSE Algorithm.
+    AllowedValues:
+      - AES256
+      - aws:kms
+    ConstraintDescription: Must be one of the allowed values
+
+  pKmsMasterKeyId:
+    Type: String
+    Description: KMS key ID required if SSE algorithm is aws:kms.
+    Default: ""
+    AllowedPattern: ^$|^arn:aws[a-zA-Z-]*:kms:[a-z0-9-]+:\d{12}:(key|alias)/.+$
+    ConstraintDescription: Must be empty or a KMS key/alias ARN
+
+  pManagedResourcePrefix:
+    Type: String
+    Description: Prefix for the managed resources
+    AllowedPattern: ^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$
+    ConstraintDescription: Lowercase letters, digits and hyphens (3-32 chars)
+
+  pRetentionDays:
+    Type: String
+    Description: No of Days to retain the logs, after which it will be permanently deleted
+
+  pTransitionToGlacier:
+    Type: String
+    Description: Do you wish to transition the logs to Glacier before permanently deleting?
+    Default: No
+    AllowedValues:
+      - Yes
+      - No
+    ConstraintDescription: Must be one of the allowed values
+
+  pTransitionDays:
+    Type: String
+    Description: No of Days to transition the data from S3 to Glacier
+
+Conditions:
+  cUseKms: !Equals
+    - !Ref pSseAlgorithm
+    - aws:kms
+
+  cMoveToGlacier: !Equals
+    - !Ref pTransitionToGlacier
+    - Yes
+
+Resources:
+
+  # access logs not to be enabled on access logs bucket
+  # trunk-ignore(checkov/CKV_AWS_18)
+  # trunk-ignore(checkov/CKV_AWS_21)
+  rS3BucketAccessLogs:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn-lint:
+        config:
+          # sentinel/optional parameter values (e.g. <New Bucket>, "") are handled by conditions
+          ignore_checks:
+            - W1030
+    Properties:
+      BucketName: !Sub ${pManagedResourcePrefix}-s3-access-logs-${AWS::AccountId}-${AWS::Region}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - !If
+              - cUseKms
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+                  KMSMasterKeyID: !Ref pKmsMasterKeyId
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - !If
+              - cMoveToGlacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+                Transitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+                NoncurrentVersionTransitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyAccessLogs:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketAccessLogs
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketAccessLogs}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketAccessLogs}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  rS3BucketCentralLog:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Metadata:
+      cfn-lint:
+        config:
+          # sentinel/optional parameter values (e.g. <New Bucket>, "") are handled by conditions
+          ignore_checks:
+            - W1030
+    Properties:
+      BucketName: !Sub ${pManagedResourcePrefix}-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - !If
+              - cUseKms
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+                  KMSMasterKeyID: !Ref pKmsMasterKeyId
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogs
+        LogFilePrefix: /
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - !If
+              - cMoveToGlacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+                Transitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+                NoncurrentVersionTransitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  # trunk-ignore(cfnlint/W3011)
+  rS3BucketPolicyCentralLog:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketCentralLog
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketCentralLog}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketCentralLog}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: ObjectReplications
+            Action:
+              - s3:*
+            Effect: Allow
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketCentralLog}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketCentralLog}/*"
+            Principal: "*"
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: !Ref pOrganizationId
+
+Outputs:
+  oCentralLogBucketName:
+    Description: Central Logging S3 bucket name
+    Value: !Ref rS3BucketCentralLog
+    Export:
+      Name: !Sub ${AWS::StackName}-oCentralLogBucketName
+
+  oCentralLogBucketArn:
+    Description: Central Logging S3 bucket ARN
+    Value: !GetAtt rS3BucketCentralLog.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oCentralLogBucketArn
+
+  oAccessLoggingBucketName:
+    Description: S3 Access Service Logging Bucket name
+    Value: !Ref rS3BucketAccessLogs
+    Export:
+      Name: !Sub ${AWS::StackName}-oAccessLoggingBucketName
+
+  oAccessLoggingBucketArn:
+    Description: S3 Access Service Logging Bucket ARN
+    Value: !GetAtt rS3BucketAccessLogs.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oAccessLoggingBucketArn

@@ -1,0 +1,16 @@
+# Quiverstone Python standard (used by trunk and CI)
+line-length = 120
+target-version = "py311"
+
+[lint]
+# pyflakes, pycodestyle, bugbear, bandit (security), pyupgrade, isort, simplify, pylint errors
+select = ["F", "E", "W", "B", "S", "UP", "I", "SIM", "PLE"]
+# E501: the formatter owns line length
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+# subprocess use in operator CLI scripts is intentional (fixed argv, no shell)
+"**/scripts/**" = ["S603", "S607"]
+
+[format]
+quote-style = "double"

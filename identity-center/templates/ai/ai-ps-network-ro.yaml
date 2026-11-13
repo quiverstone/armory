@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-network-ro): read-only network
+  topology and connectivity inspection for AI tooling -- VPC, subnets, route
+  tables, security groups, TGW, Direct Connect, Route 53, ELB, Network Manager,
+  and Reachability Analyzer (read). No mutation.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-network-ro
+    Tier: read-only
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-network-ro.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: internal
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag.
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+Resources:
+  rSsoPermissionSetAiNetworkRo:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-network-ro
+      Description: "AI network read-only: VPC/route/SG/TGW/DX/Route53/ELB/Network-Manager/Reachability inspection. No writes."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonVPCReadOnlyAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonRoute53ReadOnlyAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: NetworkInspectionRead
+            Effect: Allow
+            Action:
+              - ec2:DescribeTransitGateway*
+              - ec2:SearchTransitGatewayRoutes
+              - ec2:GetTransitGatewayRouteTableAssociations
+              - ec2:GetTransitGatewayRouteTablePropagations
+              - ec2:DescribeVpcPeeringConnections
+              - ec2:DescribeVpcEndpoint*
+              - ec2:DescribeNetworkInsights*
+              - ec2:DescribeFlowLogs
+              - directconnect:Describe*
+              - networkmanager:Get*
+              - networkmanager:List*
+              - networkmanager:Describe*
+              - elasticloadbalancing:Describe*
+              - globalaccelerator:Describe*
+              - globalaccelerator:List*
+              - route53resolver:Get*
+              - route53resolver:List*
+              - route53-recovery-readiness:Get*
+              - route53-recovery-readiness:List*
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ai-network-ro
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: read-only
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-network-ro permission set.
+    Value: !GetAtt rSsoPermissionSetAiNetworkRo.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-network-ro
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

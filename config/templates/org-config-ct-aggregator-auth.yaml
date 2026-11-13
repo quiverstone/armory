@@ -1,0 +1,48 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: CloudFormation StackSet to authorize the Config Aggregator to collect data from all accounts in the AWS Organization.
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-ct-aggregator-auth
+    Description: Approves the Control Tower Config Aggregator in all child accounts
+    Deploy-To: Management and Child Accounts as needed as stackset
+    Version: 1.0.0
+    Source: armory/config/templates/org-config-ct-aggregator-auth.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241218
+    Nonce: 20241218
+
+Parameters:
+  pUpdateNonce:
+    Description: Random Identifier to force update of resource
+    Type: String
+
+  pAuditAccountId:
+    Type: String
+    Description: Account ID for Config Aggregation
+    AllowedPattern: ^$|^(\d){12}$
+    ConstraintDescription: Must match ^$|^(\d){12}$
+
+  pAggregatedRegion:
+    Type: String
+    Description: Region where the log bucket is located
+    AllowedPattern: ^$|[a-z0-9-]+$
+    ConstraintDescription: Must match ^$|[a-z0-9-]+$
+
+Resources:
+  rConfigAggregationAuthorizationMain:
+    Type: AWS::Config::AggregationAuthorization
+    Properties:
+      AuthorizedAccountId: !Ref pAuditAccountId
+      AuthorizedAwsRegion: !Ref pAggregatedRegion
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oUpdateNonce:
+    Description: Just an output of the Nonce value
+    Value: !Ref pUpdateNonce

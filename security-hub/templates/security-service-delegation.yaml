@@ -1,0 +1,144 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Delegate AWS Security Services to Audit Account
+
+Parameters:
+  pAuditAccountId:
+    Description: SSM parameter holding the Audit (delegated administrator) account ID
+    Type: AWS::SSM::Parameter::Value<String>
+    Default: /automation/reference/org/account/Audit
+
+Resources:
+  rLambdaFunctionSecurityAdmin:
+    Type: AWS::Lambda::Function
+    DependsOn: rIamPolicyLambdaExecutionOrganizationsAccess
+    Properties:
+      FunctionName: custom-security-admin-delegation
+      Handler: index.handler
+      Runtime: python3.11
+      Timeout: 30
+      Role: !GetAtt rIamRoleLambdaExecution.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              try:
+                  organization_id = event['ResourceProperties']['OrganizationId']
+                  delegated_admin_account_id = event['ResourceProperties']['DelegatedAdministratorAccountId']
+                  service_principal = event['ResourceProperties']['SecurityServicePrincipal']
+
+                  organizations = boto3.client('organizations')
+
+                  if event["RequestType"] in ["Create", "Update"]:
+                      organizations.enable_aws_service_access(ServicePrincipal=service_principal)
+                      try:
+                          organizations.register_delegated_administrator(
+                              AccountId=delegated_admin_account_id,
+                              ServicePrincipal=service_principal
+                          )
+                      except organizations.exceptions.AccountAlreadyRegisteredException:
+                          print(f"Account {delegated_admin_account_id} is already registered for {service_principal}")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, event["LogicalResourceId"])
+                  elif event["RequestType"] == "Delete":
+                      print("Cleanup process initiated. No actions taken on deletion.")
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, event["LogicalResourceId"])
+              except Exception as e:
+                  print(f"Error processing the request: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)}, None)
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamRoleLambdaExecution:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyLambdaExecutionOrganizationsAccess:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: LambdaOrganizationsAccessPolicy for rIamRoleLambdaExecution
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - organizations:EnableAWSServiceAccess
+              - organizations:RegisterDelegatedAdministrator
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleLambdaExecution
+
+  rCustomSecurityHubDelegation:
+    Type: Custom::SecurityDelegation
+    DependsOn: rCustomGuardDutyDelegation
+    Properties:
+      ServiceToken: !GetAtt rLambdaFunctionSecurityAdmin.Arn
+      OrganizationId: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+      DelegatedAdministratorAccountId: !Ref pAuditAccountId
+      SecurityServicePrincipal: securityhub.amazonaws.com
+
+  rCustomGuardDutyDelegation:
+    Type: Custom::SecurityDelegation
+    DependsOn: rCustomMacieDelegation
+    Properties:
+      ServiceToken: !GetAtt rLambdaFunctionSecurityAdmin.Arn
+      OrganizationId: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+      DelegatedAdministratorAccountId: !Ref pAuditAccountId
+      SecurityServicePrincipal: guardduty.amazonaws.com
+
+  rCustomMacieDelegation:
+    Type: Custom::SecurityDelegation
+    DependsOn: rCustomInspectorDelegation
+    Properties:
+      ServiceToken: !GetAtt rLambdaFunctionSecurityAdmin.Arn
+      OrganizationId: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+      DelegatedAdministratorAccountId: !Ref pAuditAccountId
+      SecurityServicePrincipal: macie.amazonaws.com
+
+  rCustomInspectorDelegation:
+    Type: Custom::SecurityDelegation
+    DependsOn: rCustomAccessAnalyzerDelegation
+    Properties:
+      ServiceToken: !GetAtt rLambdaFunctionSecurityAdmin.Arn
+      OrganizationId: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+      DelegatedAdministratorAccountId: !Ref pAuditAccountId
+      SecurityServicePrincipal: inspector2.amazonaws.com
+
+  rCustomAccessAnalyzerDelegation:
+    Type: Custom::SecurityDelegation
+    Properties:
+      ServiceToken: !GetAtt rLambdaFunctionSecurityAdmin.Arn
+      OrganizationId: "{{resolve:ssm:/automation/reference/org/OrganizationId}}"
+      DelegatedAdministratorAccountId: !Ref pAuditAccountId
+      SecurityServicePrincipal: access-analyzer.amazonaws.com
+
+Outputs:
+  oDelegatedSecurityServices:
+    Description: List of delegated security services
+    Value: |
+      - securityhub.amazonaws.com
+      - guardduty.amazonaws.com
+      - macie.amazonaws.com
+      - inspector2.amazonaws.com
+      - access-analyzer.amazonaws.com
+    Export:
+      Name: !Sub ${AWS::StackName}-oDelegatedSecurityServices

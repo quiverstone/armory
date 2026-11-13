@@ -1,0 +1,129 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for the setting of Default EBS Encryption
+
+Metadata:
+  metaTemplateInfo:
+    Name: ebs-set-default-encryption
+    Description: Automation for the setting of Default EBS Encryption
+    Version: 1.0.0
+    Source: armory/ec2/templates/ebs-enable-encryption.yaml
+    Note: Deploy to all accounts (in active regions) to enable new EBS volume encryption
+    Security Hub: EC2.7
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "ebs-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: ebs-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: EBSEnableEncryption
+            Effect: Allow
+            Action:
+              - ec2:GetEbsEncryptionByDefault
+              - ec2:EnableEbsEncryptionByDefault
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentEbsEncrypt:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: enable-ebs-encryption
+      Content:
+        description: Python to Enable EBS Encryption
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: enable_ebs_encryption
+            description: Enables EBS Encryption in Region
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: ebs_encryption_handler
+              Script: |-
+                import boto3
+
+                def ebs_encryption_handler(events, context):
+                  ec2 = boto3.client("ec2")
+                  status = ec2.get_ebs_encryption_by_default()
+                  if status["EbsEncryptionByDefault"]:
+                    print("EBS default encryption is already enabled")
+                    return {"status": "already_enabled"}
+                  print("EBS default encryption is disabled. Enabling...")
+                  ec2.enable_ebs_encryption_by_default()
+                  print("EBS default encryption has been enabled")
+                  return {"status": "enabled"}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleEbsEncrypt:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: enable-ebs-encryption
+      Description: Schedule the (re)enabling of Default EBS Encryption
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "enable-ebs-encryption"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

@@ -1,0 +1,129 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for blocking public access to EBS Snapshots
+
+Metadata:
+  metaTemplateInfo:
+    Name: ebs-block-public-access
+    Description: Automation for blocking public access to EBS Snapshots
+    Version: 1.0.0
+    Source: armory/ec2/templates/ebs-block-public-sharing.yaml
+    Note: Deploy to all accounts (in active regions) to block public sharing of EBS snapshots
+    Security Hub: EC2.182
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "ebs-block-public-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: ebs-block-public-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: EBSBlockPublicAccess
+            Effect: Allow
+            Action:
+              - ec2:GetSnapshotBlockPublicAccessState
+              - ec2:EnableSnapshotBlockPublicAccess
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentEbsBlockPublic:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: ebs-block-public-access
+      Content:
+        description: Python to Block Public Access to EBS Snapshots
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: block_ebs_public_access
+            description: Blocks public access to EBS Snapshots in Region
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: ebs_block_public_handler
+              Script: |-
+                import boto3
+
+                def ebs_block_public_handler(events, context):
+                  ec2 = boto3.client("ec2")
+                  state = ec2.get_snapshot_block_public_access_state()["State"]
+                  if state == "block-all-sharing":
+                    print("EBS snapshot block public access is already set to block-all-sharing")
+                    return {"status": "already_enabled", "state": state}
+                  print(f"EBS snapshot block public access is '{state}'. Setting to block-all-sharing...")
+                  ec2.enable_snapshot_block_public_access(State="block-all-sharing")
+                  print("EBS snapshot block public access has been set to block-all-sharing")
+                  return {"status": "enabled", "state": "block-all-sharing"}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleEbsBlockPublic:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: ebs-block-public-access
+      Description: Schedule the (re)enabling of EBS Snapshot Block Public Access
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "ebs-block-public-access"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

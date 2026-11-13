@@ -1,0 +1,75 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: KMS Key for Encrytping AWS Control Tower Configuration
+
+Metadata:
+  metaTemplateInfo:
+    Name: controltower-kms-key
+    Description: KMS Key for Encrytping AWS Control Tower Configuration
+    Deploy-To: Management Account Home Region
+    Version: 1.0.0
+    Source: armory/control-tower/templates/controltower-kms-key.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pUpdateNonce:
+    Type: String
+    Description: Unique identifier for the stack set
+    Default: 2024
+
+Conditions: {}
+
+Resources:
+  rKmsKeyControlTower:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Enabled: true
+      EnableKeyRotation: true
+      MultiRegion: false
+      KeyPolicy:
+        Version: 2012-10-17
+        Id: key-controltower
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          - Sid: Allow CloudTrail and AWS Config to encrypt/decrypt logs
+            Effect: Allow
+            Principal:
+              Service:
+                - cloudtrail.amazonaws.com
+                - config.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsAliasControlTower:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/controltower
+      TargetKeyId: !Ref rKmsKeyControlTower
+
+Outputs:
+  oUpdateNonce:
+    Description: Just an output of the Nonce value
+    Value: !Ref pUpdateNonce
+
+  oControlTowerKmsKeyArn:
+    Description: The ARN of the newly created KMS Key.
+    Value: !GetAtt rKmsKeyControlTower.Arn
+    Export:
+      Name: ControlTowerKMSKeyArn

@@ -1,0 +1,50 @@
+name: Standards
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standards-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  standards:
+    name: Templates and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install --disable-pip-version-check cfn-lint ruff
+
+      - name: cfn-lint
+        run: git ls-files -z '*/templates/*.yaml' '_archive/*.yaml' | xargs -0 -r cfn-lint --
+
+      - name: Template standards
+        run: python .github/scripts/check-cfn-standards.py --repo armory
+
+      - name: No .yml or .template files
+        run: |
+          if git ls-files '*.yml' '*.template' | grep -v '^\.github/'; then
+            echo "Rename these files to .yaml" >&2
+            exit 1
+          fi
+
+      - name: ruff
+        run: |
+          ruff check --config .trunk/configs/ruff.toml .
+          ruff format --check --config .trunk/configs/ruff.toml .
+
+      - name: shellcheck
+        run: git ls-files -z '*.sh' | xargs -0 -r shellcheck

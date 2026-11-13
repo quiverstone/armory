@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-sagemaker-ml): SageMaker / ML
+  experimentation for AI tooling -- studio, notebooks, training, processing,
+  inference endpoints -- plus org read-only baseline. Includes the shared AI
+  destructive-action guardrail Deny.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-sagemaker-ml
+    Tier: builder-guardrailed
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-sagemaker-ml.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: confidential
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag.
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+Resources:
+  rSsoPermissionSetAiSagemakerMl:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-sagemaker-ml
+      Description: "AI SageMaker/ML: studio/notebooks/training/inference + org read-only. Guardrailed."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSageMakerFullAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PassRoleToSageMakerOnly
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: !Sub arn:${AWS::Partition}:iam::*:role/*SageMaker*
+            Condition:
+              StringEquals:
+                iam:PassedToService: sagemaker.amazonaws.com
+          - Sid: AiGuardrailDenyDestructive
+            Effect: Deny
+            Action:
+              - iam:CreateUser
+              - iam:CreateAccessKey
+              - iam:CreateLoginProfile
+              - iam:UpdateLoginProfile
+              - iam:AttachUserPolicy
+              - iam:AttachGroupPolicy
+              - iam:PutUserPolicy
+              - iam:PutGroupPolicy
+              - iam:CreateSAMLProvider
+              - iam:UpdateSAMLProvider
+              - iam:DeleteSAMLProvider
+              - iam:UpdateAssumeRolePolicy
+              - iam:DeleteRole
+              - iam:DeleteUser
+              - iam:DeletePolicy
+              - organizations:*
+              - account:CloseAccount
+              - account:PutAlternateContact
+              - sso:*
+              - identitystore:Create*
+              - identitystore:Delete*
+              - identitystore:Update*
+              - cloudtrail:StopLogging
+              - cloudtrail:DeleteTrail
+              - cloudtrail:UpdateTrail
+              - cloudtrail:DeleteEventDataStore
+              - config:DeleteConfigurationRecorder
+              - config:StopConfigurationRecorder
+              - config:DeleteDeliveryChannel
+              - guardduty:DeleteDetector
+              - guardduty:DisassociateFromMasterAccount
+              - securityhub:DisableSecurityHub
+              - securityhub:DeleteMembers
+              - kms:ScheduleKeyDeletion
+              - kms:DisableKey
+              - kms:DisableKeyRotation
+              - kms:PutKeyPolicy
+              - s3:DeleteBucket
+              - s3:PutBucketPolicy
+              - dynamodb:DeleteTable
+              - rds:DeleteDBInstance
+              - rds:DeleteDBCluster
+              - ec2:DeleteVolume
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ai-sagemaker-ml
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: builder-guardrailed
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-sagemaker-ml permission set.
+    Value: !GetAtt rSsoPermissionSetAiSagemakerMl.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-sagemaker-ml
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

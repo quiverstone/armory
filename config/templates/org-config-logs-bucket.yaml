@@ -1,0 +1,172 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Config centralized logging S3 bucket for the log archive account
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-logs-bucket
+    Description: Log bucket for Config logs deployed to Log Archive Account
+    Deploy-To: Audit Account Home Region
+    Version: 1.0.0
+    Original-Source: https://github.com/cloud-foundations-on-aws/cloud-foundations-templates/blob/main/logging/centralized-logging-config-s3-bucket/cfn-centralized-logging-config-s3-bucket.yaml
+    Source: armory/config/templates/org-config-logs-bucket.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241218
+    Nonce: 20241218
+
+Parameters:
+  pBucketNamePrefix:
+    Description: Bucket name prefix; the account ID is appended
+    Type: String
+    Default: config-logs
+    AllowedPattern: ^[a-z0-9][a-z0-9-]{1,40}$
+    ConstraintDescription: Lowercase letters, digits and hyphens
+
+Resources:
+  rS3BucketAccessLogging:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pBucketNamePrefix}-access-logs-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      # checkov:skip=CKV_AWS_18:Ensure the S3 bucket has access logging enabled - Remove redundant logging
+      # LoggingConfiguration:
+      #   DestinationBucketName: !Sub ${pBucketNamePrefix}-access-logs-${AWS::AccountId}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !ImportValue org-config-kms-key-id
+      LifecycleConfiguration:
+        Rules:
+          - Id: RetentionRule
+            Status: Enabled
+            ExpirationInDays: 365
+            NoncurrentVersionExpirationInDays: 365
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyAccessLogging:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketAccessLogging
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:aws:s3:::${rS3BucketAccessLogging}"
+              - !Sub "arn:aws:s3:::${rS3BucketAccessLogging}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  rS3BucketConfig:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    # checkov:skip=CKV_AWS_19:Ensure the S3 bucket has server-side-encryption enabled
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3045
+    Properties:
+      BucketName: !Sub ${pBucketNamePrefix}-${AWS::AccountId}
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogging
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !ImportValue org-config-kms-key-id
+      LifecycleConfiguration:
+        Rules:
+          - Id: RetentionRule
+            Status: Enabled
+            ExpirationInDays: 365
+            NoncurrentVersionExpirationInDays: 365
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyConfig:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketConfig
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:aws:s3:::${rS3BucketConfig}"
+              - !Sub "arn:aws:s3:::${rS3BucketConfig}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+          - Sid: AWSBucketPermissionsCheck
+            Effect: Allow
+            Principal:
+              Service:
+                - config.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource:
+              - !Sub "arn:aws:s3:::${rS3BucketConfig}"
+          - Sid: AWSConfigBucketExistenceCheck
+            Effect: Allow
+            Principal:
+              Service:
+                - config.amazonaws.com
+            Action: s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${rS3BucketConfig}"
+          - Sid: AWSBucketDeliveryForConfig
+            Effect: Allow
+            Principal:
+              Service:
+                - config.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              - !Sub "arn:aws:s3:::${rS3BucketConfig}/AWSLogs/*/*"
+
+Outputs:
+  oConfigLogsBucketName:
+    Description: Config centralized logging S3 Bucket name
+    Value: !Ref rS3BucketConfig
+    Export:
+      Name: org-config-logs-bucket-name
+
+  oLoggingBucketName:
+    Description: S3 Access Logging Bucket name for Config centralized logging
+    Value: !Ref rS3BucketAccessLogging
+    Export:
+      Name: org-config-logs-access-logs-bucket-name

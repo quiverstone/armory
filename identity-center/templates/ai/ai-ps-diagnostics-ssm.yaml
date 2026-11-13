@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-diagnostics-ssm): SSM-based
+  troubleshooting for AI tooling. Start Session Manager sessions and run
+  read-oriented SSM documents on instances, read logs/metrics. Org read-only
+  baseline. Explicitly denies destructive/document-authoring and instance
+  lifecycle actions.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-diagnostics-ssm
+    Tier: scoped-operate
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-diagnostics-ssm.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: internal
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag.
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+Resources:
+  rSsoPermissionSetAiDiagnosticsSsm:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-diagnostics-ssm
+      Description: "AI SSM diagnostics: Session Manager shell and Run Command (AWS-RunShellScript/RunPowerShellScript) on instances. Org read-only baseline."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SsmSessionManager
+            Effect: Allow
+            Action:
+              - ssm:StartSession
+              - ssm:DescribeSessions
+              - ssm:GetConnectionStatus
+            Resource:
+              - !Sub arn:${AWS::Partition}:ec2:*:*:instance/*
+              - !Sub arn:${AWS::Partition}:ssm:*:*:document/AWS-StartSSHSession
+              - !Sub arn:${AWS::Partition}:ssm:*:*:document/AWS-StartPortForwardingSession
+              - !Sub arn:${AWS::Partition}:ssm:*:*:document/SSM-SessionManagerRunShell
+          - Sid: SsmSessionTerminateOwn
+            Effect: Allow
+            Action:
+              - ssm:TerminateSession
+              - ssm:ResumeSession
+            # SSO sessions have no aws:username; match the session-id tag Session Manager sets to the caller's user ID
+            Resource: !Sub arn:${AWS::Partition}:ssm:*:*:session/*
+            Condition:
+              StringLike:
+                ssm:resourceTag/aws:ssmmessages:session-id: ${aws:userid}
+          - Sid: SsmReadDiagnostics
+            Effect: Allow
+            Action:
+              - ssm:Describe*
+              - ssm:Get*
+              - ssm:List*
+            Resource: "*"
+          - Sid: SsmRunReadOnlyDocuments
+            Effect: Allow
+            Action:
+              - ssm:SendCommand
+              - ssm:StartAutomationExecution
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:*::document/AWS-RunShellScript
+              - !Sub arn:${AWS::Partition}:ssm:*::document/AWS-RunPowerShellScript
+              - !Sub arn:${AWS::Partition}:ssm:*::document/AWSSupport-*
+              - !Sub arn:${AWS::Partition}:ec2:*:*:instance/*
+          - Sid: SsmCommandStatus
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+              - ssm:ListCommandInvocations
+              - ssm:ListCommands
+              - ssm:CancelCommand
+            Resource: "*"
+          - Sid: SessionManagerLogsKms
+            Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+              - logs:GetLogEvents
+              - logs:FilterLogEvents
+              - s3:GetEncryptionConfiguration
+            Resource: "*"
+          - Sid: DenyInstanceLifecycleAndDocAuthoring
+            Effect: Deny
+            Action:
+              - ec2:TerminateInstances
+              - ec2:StopInstances
+              - ec2:RebootInstances
+              - ec2:RunInstances
+              - ssm:CreateDocument
+              - ssm:UpdateDocument
+              - ssm:DeleteDocument
+              - ssm:ModifyDocumentPermission
+              - ssm:PutParameter
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: ai-diagnostics-ssm
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: scoped-operate
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-diagnostics-ssm permission set.
+    Value: !GetAtt rSsoPermissionSetAiDiagnosticsSsm.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-diagnostics-ssm
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

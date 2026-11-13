@@ -1,0 +1,146 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Core AWS Config Deployment of AWS Organization
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-ct- main
+    Description: Main template for deployment and configuration of AWS Config for an AWS Organization with Control Tower Managed Config
+    Deploy-To: Management and Child Accounts as needed
+    Version: 1.0.0
+    Source: armory/config/templates/org-config-ct-main.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241218
+    Nonce: 20241218
+
+Parameters:
+  pManagedRegions:
+    Type: CommaDelimitedList
+    Description: List of Regions managed by AWS Contorl Tower
+    Default: us-east-2,us-east-1,us-west-2
+
+  pStackSetNonce:
+    Type: String
+    Description: Unique identifier for the stack set
+    Default: 20241218
+
+Resources:
+  rStackSetEnableMgmtConfig:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: org-config-ct-mgmt-enable
+      Description: AWS Config Deployment to Management Account in CT Managed Regions
+      PermissionModel: SELF_MANAGED
+      ExecutionRoleName: AWSControlTowerAdmin
+      ManagedExecution:
+        Active: true
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_AUTO_EXPAND
+      OperationPreferences:
+        MaxConcurrentPercentage: 100
+        FailureTolerancePercentage: 100
+        RegionConcurrencyType: PARALLEL
+      StackInstancesGroup:
+        - Regions: !Ref pManagedRegions
+          DeploymentTargets:
+            Accounts:
+              - "{{resolve:ssm:/automation/reference/org/account/Management}}"
+      TemplateURL: !Sub
+        - https://${AssetBucket}.s3.${HomeRegion}.amazonaws.com/config/templates/org-config-ct-mgmt-enable.yaml
+        - AssetBucket: "{{resolve:ssm:/automation/reference/assets-bucket}}"
+          HomeRegion: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Parameters:
+        - ParameterKey: pUpdateNonce
+          ParameterValue: !Ref pStackSetNonce
+        - ParameterKey: pLogAccountId
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/account/Log-Archive}}"
+        - ParameterKey: pLogBucketRegion
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rStackSetMgmtConfigAuthorization:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: org-config-ct-aggregator-auth-mgmt
+      Description: Authorize AWS Config Aggregation in Management Account in CT Managed Regions
+      PermissionModel: SELF_MANAGED
+      ExecutionRoleName: AWSControlTowerAdmin
+      ManagedExecution:
+        Active: true
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_AUTO_EXPAND
+      OperationPreferences:
+        MaxConcurrentPercentage: 100
+        FailureTolerancePercentage: 100
+        RegionConcurrencyType: PARALLEL
+      StackInstancesGroup:
+        - Regions: !Ref pManagedRegions
+          DeploymentTargets:
+            Accounts:
+              - "{{resolve:ssm:/automation/reference/org/account/Management}}"
+      TemplateURL: !Sub
+        - https://${AssetBucket}.s3.${HomeRegion}.amazonaws.com/config/templates/org-config-ct-aggregator-auth.yaml
+        - AssetBucket: "{{resolve:ssm:/automation/reference/assets-bucket}}"
+          HomeRegion: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Parameters:
+        - ParameterKey: pUpdateNonce
+          ParameterValue: !Ref pStackSetNonce
+        - ParameterKey: pAuditAccountId
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/account/Audit}}"
+        - ParameterKey: pAggregatedRegion
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rStackSetConfigChildAccountsAuthorization:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: org-config-ct-aggregator-auth-children
+      Description: Authorize AWS Config Aggregation in Child Accounts in CT Managed Regions
+      PermissionModel: SERVICE_MANAGED
+      ManagedExecution:
+        Active: true
+      Capabilities:
+        - CAPABILITY_IAM
+        - CAPABILITY_NAMED_IAM
+        - CAPABILITY_AUTO_EXPAND
+      OperationPreferences:
+        MaxConcurrentPercentage: 100
+        FailureTolerancePercentage: 100
+        RegionConcurrencyType: PARALLEL
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      StackInstancesGroup:
+        - Regions: !Ref pManagedRegions
+          DeploymentTargets:
+            OrganizationalUnitIds:
+              - "{{resolve:ssm:/automation/reference/org/ou/Root}}"
+      TemplateURL: !Sub
+        - https://${AssetBucket}.s3.${HomeRegion}.amazonaws.com/config/templates/org-config-ct-aggregator-auth.yaml
+        - AssetBucket: "{{resolve:ssm:/automation/reference/assets-bucket}}"
+          HomeRegion: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Parameters:
+        - ParameterKey: pUpdateNonce
+          ParameterValue: !Ref pStackSetNonce
+        - ParameterKey: pAuditAccountId
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/account/Audit}}"
+        - ParameterKey: pAggregatedRegion
+          ParameterValue: "{{resolve:ssm:/automation/reference/org/home-region}}"
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oUpdateNonce:
+    Description: Just an output of the Nonce value
+    Value: !Ref pStackSetNonce

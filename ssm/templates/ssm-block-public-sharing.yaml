@@ -1,0 +1,133 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for blocking public sharing of SSM Documents
+
+Metadata:
+  metaTemplateInfo:
+    Name: ssm-block-public-sharing
+    Description: Automation for blocking public sharing of SSM Documents
+    Version: 1.0.0
+    Source: armory/ssm/templates/ssm-block-public-sharing.yaml
+    Note: Deploy to all accounts (in active regions) to block public sharing of SSM documents
+    Security Hub: SSM.7
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "ssm-block-public-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: ssm-block-public-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: SSMBlockPublicSharing
+            Effect: Allow
+            Action:
+              - ssm:GetServiceSetting
+              - ssm:UpdateServiceSetting
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:servicesetting/ssm/documents/console/public-sharing-permission"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentBlockPublic:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: ssm-block-public-sharing
+      Content:
+        description: Python to Block Public Sharing of SSM Documents
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: block_ssm_public_sharing
+            description: Blocks public sharing of SSM Documents in Region
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: ssm_block_public_handler
+              Script: |-
+                import boto3
+
+                SETTING_ID = "/ssm/documents/console/public-sharing-permission"
+
+                def ssm_block_public_handler(events, context):
+                  ssm = boto3.client("ssm")
+                  setting = ssm.get_service_setting(SettingId=SETTING_ID)
+                  value = setting["ServiceSetting"]["SettingValue"]
+                  if value == "Disable":
+                    print("SSM document public sharing is already blocked")
+                    return {"status": "already_blocked", "setting_value": value}
+                  print(f"SSM document public sharing is '{value}'. Blocking...")
+                  ssm.update_service_setting(SettingId=SETTING_ID, SettingValue="Disable")
+                  print("SSM document public sharing has been blocked")
+                  return {"status": "blocked", "setting_value": "Disable"}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleSsmBlockPublic:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: ssm-block-public-sharing
+      Description: Schedule the (re)blocking of SSM Document public sharing
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "ssm-block-public-sharing"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

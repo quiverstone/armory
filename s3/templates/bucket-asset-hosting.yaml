@@ -1,0 +1,170 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Public S3 bucket for hosting CloudFormation templates and assets (armory.quiverstone.io)
+
+Metadata:
+  metaTemplateInfo:
+    Name: bucket-asset-hosting
+    Description: >
+      Public-read S3 bucket that hosts this repo's templates and scripts.
+      Objects are readable directly over S3 (required for CloudFormation TemplateURL)
+      and through an optional CloudFront distribution for the custom domain.
+    Version: 1.0.0
+    Source: armory/s3/templates/bucket-asset-hosting.yaml
+    Note: >
+      Deploy once, in us-east-2. The bucket name contains dots, so use path-style S3 URLs
+      (https://s3.us-east-2.amazonaws.com/<bucket>/<key>); virtual-hosted URLs fail TLS validation.
+    LastUpdated: 20261113
+    Nonce: 20261113
+
+Parameters:
+  pUpdateNonce:
+    Description: >
+      Optional: Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Type: String
+    Default: ""
+
+  pBucketName:
+    Description: Name of Bucket (matches the public DNS name)
+    Type: String
+    Default: armory.quiverstone.io
+
+  pDistributionId:
+    Description: >
+      Optional: CloudFront distribution ID that serves the bucket on the custom domain.
+      Leave blank on first deploy, then update the stack once the distribution exists.
+    Type: String
+    Default: ""
+
+Conditions:
+  cHasDistributionId: !Not [!Equals [!Ref pDistributionId, ""]]
+
+Resources:
+
+  # trunk-ignore(checkov/CKV_AWS_18)
+  # trunk-ignore(checkov/CKV_AWS_21)
+  # trunk-ignore(trivy/AVD-AWS-0132)
+  # trunk-ignore(trivy/s3-bucket-logging)
+  # trunk-ignore(trivy/AVD-AWS-0090)
+  rS3BucketAccessLogs:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pBucketName}-access-logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  # trunk-ignore(checkov/CKV_AWS_56)
+  # trunk-ignore(checkov/CKV_AWS_54)
+  # trunk-ignore(trivy/AVD-AWS-0132)
+  # trunk-ignore(trivy/AVD-AWS-0093)
+  # trunk-ignore(trivy/AVD-AWS-0087)
+  # trunk-ignore(trivy/AVD-AWS-0320)
+  rS3BucketMain:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref pBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogs
+        LogFilePrefix: access-logs/
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyMain:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketMain
+      PolicyDocument:
+        Id: PublicAssetHosting
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyBucketDeletion
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Action: s3:DeleteBucket
+            Resource: !GetAtt rS3BucketMain.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt rS3BucketMain.Arn
+              - !Sub ${rS3BucketMain.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: PublicGetObject
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt rS3BucketMain.Arn
+              - !Sub ${rS3BucketMain.Arn}/*
+          - !If
+              - cHasDistributionId
+              - Sid: CloudFrontAccess
+                Effect: Allow
+                Principal:
+                  Service: cloudfront.amazonaws.com
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt rS3BucketMain.Arn
+                  - !Sub ${rS3BucketMain.Arn}/*
+                Condition:
+                  StringEquals:
+                    AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${pDistributionId}
+              - !Ref AWS::NoValue
+
+Outputs:
+  oUpdateNonce:
+    Description: A Random Output Identifier to force update of resource (Used for deployment CI/CD and StackSet updates)
+    Value: !Ref pUpdateNonce
+
+  oBucketName:
+    Description: Asset bucket name
+    Value: !Ref rS3BucketMain
+    Export:
+      Name: !Sub ${AWS::StackName}-oBucketName
+
+  oBucketUrl:
+    Description: Path-style S3 base URL (use for CloudFormation TemplateURL)
+    Value: !Sub https://s3.${AWS::Region}.amazonaws.com/${rS3BucketMain}
+    Export:
+      Name: !Sub ${AWS::StackName}-oBucketUrl
+
+  oPublicUrl:
+    Description: Custom-domain base URL (served through CloudFront)
+    Value: !Sub https://${pBucketName}
+    Export:
+      Name: !Sub ${AWS::StackName}-oPublicUrl

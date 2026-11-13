@@ -1,0 +1,44 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyAFTCustomFieldsModification",
+      "Effect": "Deny",
+      "Action": ["ssm:DeleteParameter*", "ssm:PutParameter"],
+      "Resource": "arn:aws:ssm:*:*:parameter/aft/account-request/custom-fields/*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/AWSControlTowerExecution",
+            "arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AWSAdministratorAccess_*",
+            "arn:aws:iam::*:role/stacksets-exec-*",
+            "arn:aws:iam::*:role/AWSAFTService",
+            "arn:aws:iam::*:role/AWSAFTExecution"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "DenyAFTCustomFieldsModification",
+      "Effect": "Deny",
+      "Action": [
+        "ssm:DeleteParameter*",
+        "ssm:DescribeParameters",
+        "ssm:GetParameter*",
+        "ssm:PutParameter"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/aft/account-request/custom-fields/*",
+      "Condition": {
+        "ArnNotLike": {
+          "aws:PrincipalArn": [
+            "arn:aws:iam::*:role/AWSControlTowerExecution",
+            "arn:aws:iam::*:role/aws-reserved/sso.amazonaws.com/*/AWSReservedSSO_AWSAdministratorAccess_*",
+            "arn:aws:iam::*:role/stacksets-exec-*",
+            "arn:aws:iam::*:role/AWSAFTService",
+            "arn:aws:iam::*:role/AWSAFTExecution"
+          ]
+        }
+      }
+    }
+  ]
+}

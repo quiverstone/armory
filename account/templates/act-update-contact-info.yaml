@@ -1,0 +1,203 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Automation for propagating management account contact information to all organization accounts
+
+Metadata:
+  metaTemplateInfo:
+    Name: act-update-contact-info
+    Description: Automation for propagating management account contact information to all organization accounts
+    Version: 1.0.0
+    Source: armory/account/templates/act-update-contact-info.yaml
+    Note: Deploy to management account only to propagate contact info to all org accounts
+    Security Hub: Account.1
+    LastUpdated: 20260401
+    Nonce: 20260401
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+  pExcludeAccountIds:
+    Description: Comma-separated list of account IDs to skip (if empty, runs on all accounts)
+    Type: String
+    Default: ""
+
+Resources:
+  rIamRoleScheduleAutomation:
+    Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F3
+            reason: TODO limit policy for logs
+          - id: W28
+            reason: Name of role helps identify or associate it to solution
+    Properties:
+      RoleName: !Sub "act-contact-info-ssm-automations-${AWS::Region}"
+      Description: Role to allow Scheduled and Triggered Automations
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ssm.amazonaws.com
+                - scheduler.amazonaws.com
+                - events.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyScheduleAutomation:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: act-contact-info-automation-ssm for rIamRoleScheduleAutomation
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: SSMAutomationExecution
+            Effect: Allow
+            Action:
+              - ssm:DescribeAutomationExecutions
+              - ssm:GetAutomationExecution
+              - ssm:StartAutomationExecution
+              - ssm:StopAutomationExecution
+            Resource:
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-execution/*"
+              - !Sub "arn:${AWS::Partition}:ssm:*:${AWS::AccountId}:automation-definition/*:*"
+          - Sid: OrganizationsListAccounts
+            Effect: Allow
+            Action:
+              - organizations:ListAccounts
+            Resource: "*"
+          - Sid: AccountContactRead
+            Effect: Allow
+            Action:
+              - account:GetContactInformation
+              - account:GetAlternateContact
+            Resource: "*"
+          - Sid: AccountContactWrite
+            Effect: Allow
+            Action:
+              - account:PutContactInformation
+              - account:PutAlternateContact
+            Resource: "*"
+      Roles:
+        - !Ref rIamRoleScheduleAutomation
+
+  rSsmDocumentActUpdateContactInfo:
+    Type: AWS::SSM::Document
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      DocumentType: Automation
+      Name: act-update-contact-info
+      Content:
+        description: Python to Propagate Management Account Contact Information Across Organization
+        schemaVersion: "0.3"
+        assumeRole: !GetAtt rIamRoleScheduleAutomation.Arn
+        mainSteps:
+          - name: update_contact_info
+            description: Reads contact info from management account and propagates to all org accounts
+            action: aws:executeScript
+            inputs:
+              Runtime: python3.11
+              Handler: update_contact_info_handler
+              Script: !Sub |-
+                import boto3
+
+                EXCLUDE_ACCOUNTS = [a.strip() for a in "${pExcludeAccountIds}".split(",") if a.strip()]
+                ALT_CONTACT_TYPES = ["SECURITY", "OPERATIONS", "BILLING"]
+
+                def get_management_contacts(account_client):
+                  primary = account_client.get_contact_information()["ContactInformation"]
+                  alternates = {}
+                  for contact_type in ALT_CONTACT_TYPES:
+                    try:
+                      resp = account_client.get_alternate_contact(AlternateContactType=contact_type)
+                      alt = resp["AlternateContact"]
+                      alternates[contact_type] = {
+                        "Name": alt["Name"],
+                        "Title": alt["Title"],
+                        "EmailAddress": alt["EmailAddress"],
+                        "PhoneNumber": alt["PhoneNumber"],
+                      }
+                    except account_client.exceptions.ResourceNotFoundException:
+                      print("No {} alternate contact set on management account, skipping".format(contact_type))
+                  return primary, alternates
+
+                def update_contact_info_handler(events, context):
+                  org_client = boto3.client("organizations")
+                  account_client = boto3.client("account")
+
+                  primary_contact, alt_contacts = get_management_contacts(account_client)
+                  print("Read contact info from management account")
+
+                  mgmt_account_id = boto3.client("sts").get_caller_identity()["Account"]
+
+                  accounts = []
+                  paginator = org_client.get_paginator("list_accounts")
+                  for page in paginator.paginate():
+                    accounts.extend(page["Accounts"])
+
+                  updated = []
+                  skipped = []
+                  failed = []
+
+                  for account in accounts:
+                    account_id = account["Id"]
+                    if account_id == mgmt_account_id:
+                      skipped.append(account_id)
+                      continue
+                    if EXCLUDE_ACCOUNTS and account_id in EXCLUDE_ACCOUNTS:
+                      skipped.append(account_id)
+                      continue
+
+                    try:
+                      account_client.put_contact_information(
+                        AccountId=account_id,
+                        ContactInformation=primary_contact,
+                      )
+
+                      for contact_type, alt_info in alt_contacts.items():
+                        account_client.put_alternate_contact(
+                          AccountId=account_id,
+                          AlternateContactType=contact_type,
+                          **alt_info,
+                        )
+
+                      updated.append(account_id)
+                      print("Updated contact info for account: {}".format(account_id))
+                    except Exception as e:
+                      failed.append(account_id)
+                      print("Failed to update account {}: {}".format(account_id, str(e)))
+
+                  print("Updated: {}, Skipped: {}, Failed: {}".format(len(updated), len(skipped), len(failed)))
+                  return {"updated": updated, "skipped": skipped, "failed": failed}
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rScheduleActUpdateContactInfo:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: rIamPolicyScheduleAutomation
+    Properties:
+      Name: act-update-contact-info
+      Description: Schedule the propagation of contact information across organization accounts
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      ScheduleExpression: rate(24 hours)
+      ScheduleExpressionTimezone: US/Central
+      State: ENABLED
+      Target:
+        Arn: !Sub arn:${AWS::Partition}:scheduler:::aws-sdk:ssm:startAutomationExecution
+        Input: '{"DocumentName": "act-update-contact-info"}'
+        RoleArn: !GetAtt rIamRoleScheduleAutomation.Arn
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

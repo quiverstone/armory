@@ -1,0 +1,101 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: S3 Bucket for exteranlly accessible assets
+
+Metadata:
+  metaTemplateInfo:
+    Name: bucket-external-assets
+    Description: S3 Bucket for exteranlly accessible assets
+    Version: 1.0.0
+    Source: armory/s3/templates/bucket-external-assets.yaml
+    Note: Deploy only to single region to prevent resource collision. (Recommended us-east-1)
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pBucketName:
+    Description: Name of Bucket
+    Type: String
+    Default: assets.example.com
+
+Resources:
+  rS3BucketAccessLogs:
+    Type: AWS::S3::Bucket
+    # checkov:skip=CKV_AWS_18: Access Logs - Will not collect access logs on access logs
+    # checkov:skip=CKV_AWS_21: Logging Bucket - No Versioning Required
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub ${pBucketName}-access-logs
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketMain:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref pBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogs
+        LogFilePrefix: access-logs/
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyMain:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketMain
+      PolicyDocument:
+        Id: AwsCfnOrgTrust
+        Version: 2012-10-17
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketMain}
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketMain}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: PublicGetObject
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${pBucketName}/*
+              - !Sub arn:${AWS::Partition}:s3:::${pBucketName}
+
+Outputs:
+  oBucketUrl:
+    Value: !Sub https://${rS3BucketMain.DomainName}
+    Description: Endpoint URL for Asset Bucket
+    Export:
+      Name: !Sub ${AWS::StackName}-oBucketUrl

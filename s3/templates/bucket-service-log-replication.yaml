@@ -1,0 +1,333 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Configure a service specific S3 bucket with replication to the respective Archive Bucket.
+
+Metadata:
+  metaTemplateInfo:
+    Name: bucket-service-log-replication
+    Description: Configure a service specific S3 bucket with replication to the respective Archive Bucket.
+    Version: 1.0.0
+    Source: armory/s3/templates/bucket-service-log-replication.yaml
+    Note: Deploy (in workload account(s)) as needed for specific service logs needing to be replicated archive bucket.
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pReplicateToArchive:
+    Type: String
+    Default: "true"
+    Description: Replicate to Log Archive Account will require destination bucket name.
+    AllowedValues:
+      - "true"
+      - "false"
+    ConstraintDescription: Must be one of the allowed values
+
+  pSseAlgorithm:
+    Type: String
+    Default: AES256
+    Description: S3 bucket SSE Algorithm.
+    AllowedValues:
+      - AES256
+      - aws:kms
+    ConstraintDescription: Must be one of the allowed values
+
+  pSourceBucketKmsEncryptionKey:
+    Description: The KMS encryption key for the source bucket
+    Type: String
+
+  pDestinationBucketName:
+    Description: Name of the destination S3 Bucket you want to replicate data into
+    Type: String
+
+  pManagedResourcePrefix:
+    Description: Prefix for bucket name
+    Type: String
+    AllowedPattern: ^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$
+    ConstraintDescription: Lowercase letters, digits and hyphens (3-32 chars)
+
+  pRetentionDays:
+    Type: String
+    Description: No of Days to retain the logs, after which it will be permanently deleted
+
+  pTransitionToGlacier:
+    Type: String
+    Description: Do you wish to transition the logs to Glacier before permanently deleting?
+    Default: No
+    AllowedValues:
+      - Yes
+      - No
+    ConstraintDescription: Must be one of the allowed values
+
+  pTransitionDays:
+    Type: String
+    Description: No of Days to transition the data from S3 to Glacier
+
+Conditions:
+  cArchiveReplication: !Equals [!Ref pReplicateToArchive, "true"]
+
+  cUseKms: !Equals [!Ref pSseAlgorithm, aws:kms]
+
+  cMoveToGlacier: !Equals
+    - !Ref pTransitionToGlacier
+    - Yes
+
+Resources:
+
+  # IAM Role for S3 Bucket Replication
+  rIamRoleReplicationBucket:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: [s3.amazonaws.com]
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rIamPolicyReplication:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: S3 replication permissions for the service log bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetReplicationConfiguration
+              - s3:ListBucket
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${rS3BucketServiceLog}"
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:GetObjectAcl
+              - s3:GetObjectVersionAcl
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${rS3BucketServiceLog}/*"
+          - Effect: Allow
+            Action:
+              - s3:ReplicateObject
+              - s3:ReplicateDelete
+              - s3:ReplicateTags
+              - s3:GetObjectVersionTagging
+              - s3:ObjectOwnerOverrideToBucketOwner
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${pDestinationBucketName}/*"
+          - Effect: Allow
+            Action:
+              - s3:GetBucketVersioning
+              - s3:PutBucketVersioning
+            Resource: !Sub "arn:${AWS::Partition}:s3:::${rS3BucketServiceLog}"
+      Roles:
+        - !Ref rIamRoleReplicationBucket
+
+  # Service Log Bucket
+  rS3BucketServiceLog:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pManagedResourcePrefix}-${AWS::AccountId}-${AWS::Region}
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - !If
+              - cUseKms
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+                  KMSMasterKeyID: !Ref pSourceBucketKmsEncryptionKey
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+      LoggingConfiguration:
+        DestinationBucketName: !Ref rS3BucketAccessLogs
+      ReplicationConfiguration: !If
+        - cArchiveReplication
+        - Role: !GetAtt rIamRoleReplicationBucket.Arn
+          Rules:
+            - Id: LogArchive
+              Status: Enabled
+              Destination:
+                Bucket: !Sub "arn:${AWS::Partition}:s3:::${pDestinationBucketName}"
+                StorageClass: STANDARD
+        - !Ref AWS::NoValue
+      LifecycleConfiguration:
+        Rules:
+          - !If
+              - cMoveToGlacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+                Transitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+                NoncurrentVersionTransitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyServiceLog:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketServiceLog
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketServiceLog}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketServiceLog}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          # - Sid: ALBLogPermissions
+          #   Action:
+          #     - s3:PutObject
+          #   Effect: Allow
+          #   Principal:
+          #     AWS:
+          #       - !FindInMap [ALBAccountMap,!Ref AWS::Region, accountId]
+          #   Resource:
+          #     - !Sub "${ServiceLogBucket.Arn}/*"
+          - Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:PutObject
+            Resource:
+              - !Sub "${rS3BucketServiceLog.Arn}/*"
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+          - Effect: Allow
+            Principal:
+              Service: delivery.logs.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource:
+              - !Sub "${rS3BucketServiceLog.Arn}"
+          # - !If
+          #   - ArchiveReplication
+          #   - Sid: ReplicationPermissions
+          #     Effect: Allow
+          #     Principal:
+          #       AWS: !GetAtt ReplicationBucketRole.Arn
+          #     Action:
+          #       - s3:GetObjectVersionForReplication
+          #       - s3:GetObjectVersionAcl
+          #       - s3:GetObjectVersionTagging
+          #       - s3:ReplicateObject
+          #       - s3:ReplicateDelete
+          #       - s3:ReplicateTags
+          #       - s3:ObjectOwnerOverrideToBucketOwner
+          #     Resource:
+          #       - !Sub "arn:${AWS::Partition}:s3:::${ServiceLogBucket}/*"
+          #       - !Sub "arn:${AWS::Partition}:s3:::${DestinationBucketName}/*"
+          #   - !Ref AWS::NoValue
+
+  # trunk-ignore(checkov/CKV_AWS_21)
+  # trunk-ignore(checkov/CKV_AWS_18)
+  rS3BucketAccessLogs:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${pManagedResourcePrefix}-s3-access-logs-${AWS::AccountId}-${AWS::Region}
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - !If
+              - cUseKms
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+                  KMSMasterKeyID: !Ref pSourceBucketKmsEncryptionKey
+              - ServerSideEncryptionByDefault:
+                  SSEAlgorithm: !Ref pSseAlgorithm
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - !If
+              - cMoveToGlacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+                Transitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+                NoncurrentVersionTransitions:
+                  - TransitionInDays: !Ref pTransitionDays
+                    StorageClass: Glacier
+              - Id: RetentionRule
+                Status: Enabled
+                ExpirationInDays: !Ref pRetentionDays
+                NoncurrentVersionExpirationInDays: !Ref pRetentionDays
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyAccessLogs:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref rS3BucketAccessLogs
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowSSLRequestsOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketAccessLogs}"
+              - !Sub "arn:${AWS::Partition}:s3:::${rS3BucketAccessLogs}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+Outputs:
+  oServiceLogBucketName:
+    Description: The S3 bucket created for service logs
+    Value: !Ref rS3BucketServiceLog
+    Export:
+      Name: !Sub ${AWS::StackName}-oServiceLogBucketName
+
+  oServiceLogBucketArn:
+    Description: ARN of the source log bucket
+    Value: !GetAtt rS3BucketServiceLog.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oServiceLogBucketArn
+
+  oReplicationRoleArn:
+    Description: Role ARN used for replicating S3 Bucket contents
+    Value: !GetAtt rIamRoleReplicationBucket.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oReplicationRoleArn
+
+  oReplicationRoleName:
+    Description: Role name used for replicating S3 Bucket contents
+    Value: !Ref rIamRoleReplicationBucket
+    Export:
+      Name: !Sub ${AWS::StackName}-oReplicationRoleName

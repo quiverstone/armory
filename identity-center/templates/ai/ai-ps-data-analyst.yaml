@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: >-
+  AI programmatic-access Permission Set (ai-data-analyst): non-destructive
+  analytics for AI tooling. Read data via Athena / Glue catalog / Redshift Data
+  API / Lake Formation, write only to Athena query-result buckets. Org read-only
+  baseline. No delete of source data.
+
+Metadata:
+  metaTemplateInfo:
+    PermissionSetName: ai-data-analyst
+    Tier: scoped-read-plus-query
+    ManagedBy: aws-ai-team-permission-sets
+    Version: 1.0.0
+    Source: armory/identity-center/templates/ai/ai-ps-data-analyst.yaml
+    LastUpdated: 20261113
+
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: IAM Identity Center
+        Parameters:
+          - pInstanceArn
+      - Label:
+          default: Permission Set Configuration
+        Parameters:
+          - pSessionDuration
+          - pAthenaResultsBucketPattern
+      - Label:
+          default: Governance Tags
+        Parameters:
+          - pEnvironment
+          - pProject
+          - pOwner
+          - pCostCenter
+          - pDataClassification
+
+Parameters:
+  pInstanceArn:
+    Type: String
+    Description: ARN of the IAM Identity Center instance (sso-admin list-instances)
+    AllowedPattern: "^arn:aws[a-z-]*:sso:::instance/ssoins-[0-9a-f]{16}$"
+    ConstraintDescription: Must be an IAM Identity Center instance ARN
+
+  pSessionDuration:
+    Type: String
+    Description: Max session duration (ISO-8601).
+    Default: PT1H
+    AllowedValues: [PT1H, PT2H, PT4H, PT8H, PT12H]
+    ConstraintDescription: Must be one of PT1H, PT2H, PT4H, PT8H, PT12H
+
+  pEnvironment:
+    Type: String
+    Default: all
+    AllowedValues: [dev, staging, prod, all]
+    Description: Deployment environment scope for the tag.
+    ConstraintDescription: Must be dev, staging, prod or all
+
+  pProject:
+    Type: String
+    Default: aws-ai-team-permission-sets
+    Description: Project name tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pOwner:
+    Type: String
+    Default: owner@example.com
+    Description: Owning team email tag.
+    AllowedPattern: ^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be an email address
+
+  pCostCenter:
+    Type: String
+    Default: unassigned
+    Description: Cost center id tag.
+    AllowedPattern: ^[\w .:/=+@-]{1,256}$
+    ConstraintDescription: '1-256 letters, digits, spaces and _ . : / = + @ -'
+
+  pDataClassification:
+    Type: String
+    Default: confidential
+    AllowedValues: [public, internal, confidential, restricted]
+    Description: Data classification tag.
+    ConstraintDescription: Must be public, internal, confidential or restricted
+
+  pAthenaResultsBucketPattern:
+    Description: Bucket name pattern for Athena query results. IAM policy variables are allowed; the default matches the Athena default results bucket in the caller's own account
+    Type: String
+    Default: aws-athena-query-results-${aws:PrincipalAccount}-*
+    AllowedPattern: ^[A-Za-z0-9.*:${}-]{3,128}$
+    ConstraintDescription: Must be a bucket name or pattern (letters, digits, . - * and ${policy:variables})
+
+Resources:
+  rSsoPermissionSetAiDataAnalyst:
+    Type: AWS::SSO::PermissionSet
+    Properties:
+      Name: ai-data-analyst
+      Description: "AI data analyst: Athena/Glue/Redshift-Data query + org read-only. Writes limited to Athena result buckets."
+      InstanceArn: !Ref pInstanceArn
+      SessionDuration: !Ref pSessionDuration
+      ManagedPolicies:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/ReadOnlyAccess
+      InlinePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AthenaQuery
+            Effect: Allow
+            Action:
+              - athena:List*
+              - athena:Get*
+              - athena:BatchGet*
+              - athena:StartQueryExecution
+              - athena:StopQueryExecution
+              - athena:CreatePreparedStatement
+              - athena:DeletePreparedStatement
+              - athena:UpdatePreparedStatement
+            Resource: "*"
+          - Sid: GlueCatalogRead
+            Effect: Allow
+            Action:
+              - glue:Get*
+              - glue:BatchGet*
+              - glue:List*
+              - glue:SearchTables
+            Resource: "*"
+          - Sid: LakeFormationRead
+            Effect: Allow
+            Action:
+              - lakeformation:GetDataAccess
+              - lakeformation:GetResourceLFTags
+              - lakeformation:ListLFTags
+              - lakeformation:SearchTablesByLFTags
+              - lakeformation:SearchDatabasesByLFTags
+            Resource: "*"
+          - Sid: RedshiftDataApi
+            Effect: Allow
+            Action:
+              - redshift-data:ExecuteStatement
+              - redshift-data:BatchExecuteStatement
+              - redshift-data:DescribeStatement
+              - redshift-data:GetStatementResult
+              - redshift-data:ListStatements
+              - redshift-data:CancelStatement
+              - redshift:GetClusterCredentialsWithIAM
+              - redshift:DescribeClusters
+              - redshift-serverless:GetCredentials
+            Resource: "*"
+          - Sid: AthenaResultsBucketReadWrite
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource:
+              - !Sub
+                - arn:${AWS::Partition}:s3:::${Pattern}
+                - Pattern: !Ref pAthenaResultsBucketPattern
+              - !Sub
+                - arn:${AWS::Partition}:s3:::${Pattern}/*
+                - Pattern: !Ref pAthenaResultsBucketPattern
+      Tags:
+        - Key: Name
+          Value: ai-data-analyst
+        - Key: Environment
+          Value: !Ref pEnvironment
+        - Key: Project
+          Value: !Ref pProject
+        - Key: Owner
+          Value: !Ref pOwner
+        - Key: CostCenter
+          Value: !Ref pCostCenter
+        - Key: DataClassification
+          Value: !Ref pDataClassification
+        - Key: ManagedBy
+          Value: aws-ai-team-permission-sets
+        - Key: Purpose
+          Value: ai-programmatic-access
+        - Key: AccessTier
+          Value: scoped-read-plus-query
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oPermissionSetArn:
+    Description: ARN of the ai-data-analyst permission set.
+    Value: !GetAtt rSsoPermissionSetAiDataAnalyst.PermissionSetArn
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetArn
+
+  oPermissionSetName:
+    Description: Name of the permission set.
+    Value: ai-data-analyst
+    Export:
+      Name: !Sub ${AWS::StackName}-oPermissionSetName

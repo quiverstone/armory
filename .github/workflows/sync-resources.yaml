@@ -1,0 +1,48 @@
+---
+name: Sync Resources
+
+on:
+  push:
+    branches-ignore:
+      - master
+      - main
+
+permissions: read-all
+
+env:
+  SESSION: github-automation-action
+  DURATION: 900
+  REGION: us-east-2
+  BUCKET_NAME: armory.quiverstone.io
+  PUBLIC_URL: https://armory.quiverstone.io
+
+jobs:
+  Deploy:
+    name: Upload Resources to S3
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout Project
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-session-name: ${{ env.SESSION }}
+          role-duration-seconds: ${{ env.DURATION }}
+          aws-region: ${{ env.REGION }}
+          role-to-assume: ${{ secrets.PA_DELIVER }}
+
+      - name: Sync Resources to S3
+        run: |
+          aws s3 sync . "s3://$BUCKET_NAME" --delete \
+            --exclude ".git*" --exclude ".github/*" --exclude ".trunk/*" --exclude "*.DS_Store"
+          echo "Published to $PUBLIC_URL"
+
+      # Set the repository variable CLOUDFRONT_DISTRIBUTION_ID to refresh the custom-domain cache
+      - name: Invalidate CloudFront cache
+        if: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID != '' }}
+        run: |
+          aws cloudfront create-invalidation --distribution-id "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" --paths "/*"

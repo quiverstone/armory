@@ -1,0 +1,307 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: Enable AWS Config with central logging and notification
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-service
+    Deploy-To: Management and Child Accounts as needed
+    Version: 1.0.0
+    Original-Source: https://s3.amazonaws.com/cloudformation-stackset-sample-templates-us-east-1/EnableAWSConfigForOrganizations.yml
+    Source: armory/config/templates/org-config-service.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241218
+    Nonce: 20241218
+
+Parameters:
+  pAllSupported:
+    Type: String
+    Default: true
+    Description: Indicates whether to record all supported resource types.
+    AllowedValues:
+      - true
+      - false
+    ConstraintDescription: Must be one of the allowed values
+
+  pIncludeGlobalResourceTypes:
+    Type: String
+    Default: false
+    Description: Indicates whether AWS Config records all supported global resource types.
+    AllowedValues:
+      - true
+      - false
+    ConstraintDescription: Must be one of the allowed values
+
+  pResourceTypes:
+    Type: List<String>
+    Description: A list of valid AWS resource types to include in this recording group, such as AWS::EC2::Instance or AWS::CloudTrail::Trail.
+    Default: <All>
+
+  pServiceLinkedRoleRegion:
+    Type: String
+    Description: A region such as us-east-1. If specified, the Config service-linked role will only be created if the stack is deployed to this region.
+    Default: <DeployToAnyRegion>
+    AllowedPattern: ^<DeployToAnyRegion>$|^[a-z]{2}(-gov)?-[a-z]+-\d$
+    ConstraintDescription: Must be <DeployToAnyRegion> or an AWS region code such as us-east-2
+
+  pDeliveryChannelName:
+    Type: String
+    Default: <Generated>
+    Description: The name of the delivery channel.
+
+  pS3BucketName:
+    Type: String
+    Description: Central S3 bucket where AWS Config delivers configuration snapshots and history.
+    Default: <New Bucket>
+    AllowedPattern: ^<New Bucket>$|^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$
+    ConstraintDescription: Must be <New Bucket> or a valid S3 bucket name
+
+  pS3KeyPrefix:
+    Type: String
+    Description: The prefix for the Amazon S3 bucket (optional).
+    Default: <No Prefix>
+
+  pFrequency:
+    Type: String
+    Default: 24hours
+    Description: The frequency with which AWS Config delivers configuration snapshots.
+    AllowedValues:
+      - Disabled
+      - 1hour
+      - 3hours
+      - 6hours
+      - 12hours
+      - 24hours
+    ConstraintDescription: Must be one of the allowed values
+
+  pRecordingFrequency:
+    Type: String
+    Description: The frequency with which AWS Config Recorder records configuration changes.
+    AllowedValues:
+      - CONTINUOUS
+      - DAILY
+    ConstraintDescription: Must be one of the allowed values
+
+  pSns:
+    Type: String
+    Default: true
+    Description: Describes wether AWS Config sends SNS notifications.
+    AllowedValues:
+      - true
+      - false
+    ConstraintDescription: Must be one of the allowed values
+
+  pTopicArn:
+    Type: String
+    Default: <New Topic>
+    Description: The Amazon Resource Name (ARN) of the Amazon Simple Notification Service (Amazon SNS) topic that AWS Config delivers notifications to. Topic ARN must belong to the same Region where you will be deploying the Stack.
+    AllowedPattern: ^<New Topic>$|^arn:aws[a-zA-Z-]*:sns:[a-z0-9-]+:\d{12}:.+$
+    ConstraintDescription: Must be <New Topic> or an SNS topic ARN
+
+  pNotificationEmail:
+    Type: String
+    Default: <None>
+    Description: Email address for AWS Config notifications (for new topics).
+    AllowedPattern: ^<None>$|^$|^[^@\s]+@[^@\s]+\.[^@\s]+$
+    ConstraintDescription: Must be <None> or a valid email address
+
+Mappings:
+  mSettings:
+    FrequencyMap:
+      Disabled: TwentyFour_Hours
+      1hour: One_Hour
+      3hours: Three_Hours
+      6hours: Six_Hours
+      12hours: Twelve_Hours
+      24hours: TwentyFour_Hours
+
+Conditions:
+  cIsAllSupported: !Equals
+    - !Ref pAllSupported
+    - true
+
+  cIsGeneratedDeliveryChannelName: !Equals
+    - !Ref pDeliveryChannelName
+    - <Generated>
+
+  cCreateConfigSLR: !Or
+    - !Equals [!Ref pServiceLinkedRoleRegion, <DeployToAnyRegion>]
+    - !Equals [!Ref pServiceLinkedRoleRegion, !Ref AWS::Region]
+
+  cUsePrefix: !Not
+    - !Equals
+        - !Ref pS3KeyPrefix
+        - <No Prefix>
+
+  cDisableSnapshots: !Equals
+    - !Ref pFrequency
+    - Disabled
+
+  cUseSns: !Equals
+    - !Ref pSns
+    - true
+
+  cCreateTopic: !And
+    - !Equals
+        - !Ref pTopicArn
+        - <New Topic>
+    - !Condition cUseSns
+
+  cCreateSubscription: !And
+    - !Condition cCreateTopic
+    - !Not
+        - !Equals
+            - !Ref pNotificationEmail
+            - <None>
+
+Resources:
+
+  # ConfigBucket:
+  #   Condition: CreateBucket
+  #   DeletionPolicy: Retain
+  #   Type: AWS::S3::Bucket
+  #   Properties:
+  #     BucketEncryption:
+  #       ServerSideEncryptionConfiguration:
+  #         - ServerSideEncryptionByDefault:
+  #             SSEAlgorithm: AES256
+  # ConfigBucketPolicy:
+  #   Condition: CreateBucket
+  #   Type: AWS::S3::BucketPolicy
+  #   Properties:
+  #     Bucket: !Ref ConfigBucket
+  #     PolicyDocument:
+  #       Version: 2012-10-17
+  #       Statement:
+  #         - Sid: AWSConfigBucketPermissionsCheck
+  #           Effect: Allow
+  #           Principal:
+  #             Service:
+  #               - config.amazonaws.com
+  #           Action: s3:GetBucketAcl
+  #           Resource:
+  #             - !Sub "arn:${AWS::Partition}:s3:::${ConfigBucket}"
+  #           Condition:
+  #             StringEquals:
+  #               AWS:SourceAccount: !Ref AWS::AccountId
+  #         - Sid: AWSConfigBucketExistenceCheck
+  #           Effect: Allow
+  #           Principal:
+  #             Service:
+  #               - config.amazonaws.com
+  #           Action: s3:ListBucket
+  #           Resource:
+  #             - !Sub "arn:${AWS::Partition}:s3:::${ConfigBucket}"
+  #           Condition:
+  #             StringEquals:
+  #               AWS:SourceAccount: !Ref AWS::AccountId
+  #         - Sid: AWSConfigBucketDelivery
+  #           Effect: Allow
+  #           Principal:
+  #             Service:
+  #               - config.amazonaws.com
+  #           Action: s3:PutObject
+  #           Resource: !If
+  #             - UsePrefix
+  #             - !Sub "arn:${AWS::Partition}:s3:::${ConfigBucket}/${S3KeyPrefix}/AWSLogs/${AWS::AccountId}/*"
+  #             - !Sub "arn:${AWS::Partition}:s3:::${ConfigBucket}/AWSLogs/${AWS::AccountId}/*"
+  #           Condition:
+  #             StringLike:
+  #               "s3:x-amz-acl": bucket-owner-full-control
+  #             StringEquals:
+  #               AWS:SourceAccount: !Ref AWS::AccountId
+  rSnsTopicConfig:
+    Condition: cCreateTopic
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "config-topic-${AWS::AccountId}"
+      DisplayName: AWS Config Notification Topic
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rSnsTopicPolicyConfig:
+    Condition: cCreateTopic
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref rSnsTopicConfig
+      PolicyDocument:
+        Statement:
+          - Sid: AWSConfigSNSPolicy
+            Action:
+              - sns:Publish
+            Effect: Allow
+            Resource: !Ref rSnsTopicConfig
+            Principal:
+              Service:
+                - config.amazonaws.com
+
+  rSnsSubscriptionEmailNotification:
+    Condition: cCreateSubscription
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref pNotificationEmail
+      Protocol: email
+      TopicArn: !Ref rSnsTopicConfig
+
+  rIamServiceLinkedRoleConfig:
+    Condition: cCreateConfigSLR
+    Type: AWS::IAM::ServiceLinkedRole
+    Properties:
+      AWSServiceName: config.amazonaws.com
+
+  rConfigRecorderMain:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      RecordingGroup:
+        AllSupported: !Ref pAllSupported
+        IncludeGlobalResourceTypes: !Ref pIncludeGlobalResourceTypes
+        ResourceTypes: !If
+          - cIsAllSupported
+          - !Ref AWS::NoValue
+          - !Ref pResourceTypes
+      RoleARN:
+        Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig"
+      RecordingMode:
+        RecordingFrequency: !Ref pRecordingFrequency
+
+  rConfigDeliveryChannelMain:
+    Type: AWS::Config::DeliveryChannel
+    Metadata:
+      cfn-lint:
+        config:
+          # sentinel/optional parameter values (e.g. <New Bucket>, "") are handled by conditions
+          ignore_checks:
+            - W1030
+    Properties:
+      Name: !If
+        - cIsGeneratedDeliveryChannelName
+        - !Ref AWS::NoValue
+        - !Ref pDeliveryChannelName
+      ConfigSnapshotDeliveryProperties: !If
+        - cDisableSnapshots
+        - !Ref AWS::NoValue
+        - DeliveryFrequency: !FindInMap
+            - mSettings
+            - FrequencyMap
+            - !Ref pFrequency
+      S3BucketName: !Ref pS3BucketName
+      # S3BucketName: !If
+      #   - CreateBucket
+      #   - !Ref ConfigBucket
+      #   - !Ref S3BucketName
+      S3KeyPrefix: !If
+        - cUsePrefix
+        - !Ref pS3KeyPrefix
+        - !Ref AWS::NoValue
+      SnsTopicARN: !If
+        - cUseSns
+        - !If
+            - cCreateTopic
+            - !Ref rSnsTopicConfig
+            - !Ref pTopicArn
+        - !Ref AWS::NoValue

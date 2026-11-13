@@ -1,0 +1,82 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Shared KMS Key for dedicated central Backup account
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-backup-kms-key
+    Description: KMS key for cross-account backups in the dedicated Backup account
+    Deploy-To: Management Account Home Region
+    Version: 1.0.0
+    Source: armory/backup/templates/org-backup-kms-key.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241209
+    Nonce: 20241209
+
+Parameters:
+  pKeyAliasName:
+    Description: Alias for the KMS key
+    Type: String
+    Default: alias/org-backup-service
+    AllowedPattern: ^alias/[a-zA-Z0-9/_-]+$
+    ConstraintDescription: Must start with alias/ and use letters, digits, / _ -
+
+Resources:
+  rKmsKeyBackup:
+    Type: AWS::KMS::Key
+    # checkov:skip=CKV_AWS_33: Wildcard Principal - Required for all-org accounts access
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: KMS key for cross-account backups in the dedicated Backup account
+      Enabled: true
+      EnableKeyRotation: true
+      MultiRegion: true
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: KeyPolicy-BackupKmsKey
+        Statement:
+          - Sid: AllowRootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action:
+              - kms:*
+            Resource: "*"
+          - Sid: AllowAccessForAWSOrganization
+            Effect: Allow
+            Principal: "*"
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:ReEncrypt*
+              - kms:GetKeyPolicy
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:RevokeGrant
+              - kms:GenerateDataKey*
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:PrincipalOrgID: "{{ssm:resolve:/automation/reference/org/OrganizationId}}"
+      Tags:
+        - Key: Purpose
+          Value: Backup
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rKmsAliasBackup:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Ref pKeyAliasName
+      TargetKeyId: !Ref rKmsKeyBackup
+
+Outputs:
+  oBackupKmsKeyArn:
+    Description: The ARN of the KMS key for backups
+    Value: !GetAtt rKmsKeyBackup.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-oBackupKmsKeyArn

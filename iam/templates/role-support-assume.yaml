@@ -1,0 +1,70 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: IAM Support Role for External Support Access
+
+Metadata:
+  metaTemplateInfo:
+    Name: iam-support-role
+    Description: IAM Support Role for External Support Access
+    Version: 1.0.0
+    Source: armory/iam/templates/role-support-assume.yaml
+    Note: Deploy to all accounts for external support access to child accounts
+    Security Hub: IAM.18 - Low
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pSupportAccountId:
+    Description: Account ID for support account assume role
+    Type: String
+    AllowedPattern: ^\d{12}$
+    ConstraintDescription: Must be a 12-digit AWS account ID
+
+  pHomeRegion:
+    Description: Home Control Tower and Central Security Hub Region
+    Type: String
+    MinLength: 8
+    AllowedPattern: ^[a-z]{2}(-gov)?-[a-z]+-\d$
+    ConstraintDescription: Must be an AWS region code such as us-east-2
+
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Conditions:
+  cIsHomeRegion: !Equals [!Ref AWS::Region, !Ref pHomeRegion] ## only launch global resources in single/home region
+
+Resources:
+  rIamRoleSupport:
+    Condition: cIsHomeRegion
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: operational-support-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS:
+                - !Sub ${pSupportAccountId}
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/job-function/ViewOnlyAccess
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/job-function/SupportUser
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AWSSupportAccess
+      Tags:
+        - Key: control
+          Value: IAM.18 - Low
+        - Key: purpose
+          Value: support access
+        - Key: deployed
+          Value: mgmt account stackset
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

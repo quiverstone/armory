@@ -1,0 +1,88 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+
+Description: S3 Bucket for CUR Data Export
+
+Metadata:
+  metaTemplateInfo:
+    Name: bucket-cur-data
+    Description: S3 Bucket for collection of CUR Data Export
+    Version: 1.0.0
+    Source: armory/billing/templates/bucket-cur-data.yaml
+    Note: Recommended to deploy only to us-east-1 region to due to billing service endpoint.
+    LastUpdated: 20241206
+    Nonce: 20241206
+
+Parameters:
+  pBucketNamePrefix:
+    Description: Bucket name prefix; the account ID is appended
+    Type: String
+    Default: cur-data-export
+    AllowedPattern: ^[a-z0-9][a-z0-9-]{1,40}$
+    ConstraintDescription: Lowercase letters, digits and hyphens
+
+Conditions:
+  cIsUsEast1: !Equals [!Ref AWS::Region, us-east-1]
+
+Resources:
+  rS3BucketBilling:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: cIsUsEast1
+    Properties:
+      BucketName: !Sub "${pBucketNamePrefix}-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LoggingConfiguration:
+        LogFilePrefix: access-logs
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rS3BucketPolicyBilling:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Condition: cIsUsEast1
+    Properties:
+      Bucket: !Ref rS3BucketBilling
+      PolicyDocument:
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketBilling}
+              - !Sub arn:${AWS::Partition}:s3:::${rS3BucketBilling}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: EnableAWSDataExportsToWriteToS3AndCheckPolicy
+            Effect: Allow
+            Principal:
+              Service:
+                - billingreports.amazonaws.com
+                - bcm-data-exports.amazonaws.com
+            Action:
+              - s3:PutObject
+              - s3:GetBucketPolicy
+            Resource:
+              - !Sub ${rS3BucketBilling.Arn}
+              - !Sub ${rS3BucketBilling.Arn}/*
+            Condition:
+              StringLike:
+                aws:SourceArn:
+                  - !Sub arn:${AWS::Partition}:cur:us-east-1:${AWS::AccountId}:definition/*
+                  - !Sub arn:${AWS::Partition}:bcm-data-exports:us-east-1:${AWS::AccountId}:export/*
+                aws:SourceAccount: !Sub ${AWS::AccountId}

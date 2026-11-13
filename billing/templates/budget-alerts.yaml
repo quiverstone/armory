@@ -1,0 +1,103 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: AWS Budget with email notifications for cost thresholds
+
+Parameters:
+  pEmailAddress:
+    Type: String
+    Description: Email address to receive budget notifications
+    AllowedPattern: '^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    ConstraintDescription: Must match ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+
+Resources:
+  rSnsTopicBudgetNotification:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Budget-Notification-Topic
+      KmsMasterKeyId: alias/aws/sns
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+  rSnsSubscriptionEmail:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: email
+      TopicArn: !Ref rSnsTopicBudgetNotification
+      Endpoint: !Ref pEmailAddress
+
+  rBudgetMonthly:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: Monthly-Cost-Budget
+        BudgetLimit:
+          Amount: 500
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        CostFilters: {}
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 75
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 85
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 90
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 95
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+        # Adding forecasted notifications
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: SNS
+              Address: !Ref rSnsTopicBudgetNotification
+
+Outputs:
+  oBudgetName:
+    Description: Name of the created budget
+    Value: Monthly-Cost-Budget
+    Export:
+      Name: !Sub ${AWS::StackName}-oBudgetName
+
+  oNotificationTopic:
+    Description: ARN of the SNS topic for budget notifications
+    Value: !Ref rSnsTopicBudgetNotification
+    Export:
+      Name: !Sub ${AWS::StackName}-oNotificationTopic

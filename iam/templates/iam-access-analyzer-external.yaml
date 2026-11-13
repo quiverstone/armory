@@ -1,0 +1,41 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Enable IAM Access Analyzer (ACCOUNT type) to satisfy Security Hub IAM.28
+
+Metadata:
+  metaTemplateInfo:
+    Name: iam-access-analyzer-external
+    Description: Enable IAM Access Analyzer (ACCOUNT type) to satisfy Security Hub IAM.28
+    Version: 1.0.0
+    Source: armory/iam/templates/iam-access-analyzer-external.yaml
+    Note: Deploy to all accounts (in active regions) to enable IAM Access Analyzer for external access findings
+    Security Hub: IAM.28
+    LastUpdated: 20260402
+    Nonce: 20260402
+
+Parameters:
+  pNonceValue:
+    Description: Random Identifier to force update of stackset resource
+    Type: String
+
+Resources:
+  rAccessAnalyzerAccount:
+    Type: AWS::AccessAnalyzer::Analyzer
+    Properties:
+      AnalyzerName: !Sub "access-analyzer-${AWS::AccountId}"
+      Type: ACCOUNT
+      Tags:
+        - Key: GitHub
+          Value: quiverstone/armory
+
+Outputs:
+  oAnalyzerArn:
+    Description: The ARN of the IAM Access Analyzer
+    Value: !Ref rAccessAnalyzerAccount
+    Export:
+      Name: !Sub ${AWS::StackName}-oAnalyzerArn
+
+  oNonceValue:
+    Description: Just an output of the Nonce value
+    Value: !Ref pNonceValue

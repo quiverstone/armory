@@ -1,0 +1,68 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Enable AWS Config in the Management Account
+
+Metadata:
+  metaTemplateInfo:
+    Name: org-config-ct-mgmt-enable
+    Description: Enabled Config in Management account within a Control Tower Deployment
+    Deploy-To: Management and Child Accounts as needed as stackset
+    Version: 1.0.0
+    Source: armory/config/templates/org-config-ct-mgmt-enable.yaml
+    Note: This template is part of the SC Consulting product deployment
+    QuickStackLink: Not deployed to bucket currently
+    LastUpdated: 20241218
+    Nonce: 20241218
+
+Parameters:
+  pUpdateNonce:
+    Description: Random Identifier to force update of resource
+    Type: String
+
+  pLogAccountId:
+    Type: String
+    Description: Log Archive Account ID
+    AllowedPattern: ^$|^(\d){12}$
+    ConstraintDescription: Must match ^$|^(\d){12}$
+
+  pLogBucketRegion:
+    Type: String
+    Description: Region where the log bucket is located
+    AllowedPattern: ^$|[a-z0-9-]+$
+    ConstraintDescription: Must match ^$|[a-z0-9-]+$
+
+Resources:
+  rConfigRecorderMain:
+    Type: AWS::Config::ConfigurationRecorder
+    Properties:
+      Name: default
+      RoleARN: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/config.amazonaws.com/AWSServiceRoleForConfig
+      RecordingGroup:
+        AllSupported: true
+        IncludeGlobalResourceTypes: true
+
+  rConfigDeliveryChannelMain:
+    Type: AWS::Config::DeliveryChannel
+    Properties:
+      Name: default
+      S3BucketName: !Sub aws-controltower-logs-${pLogAccountId}-${pLogBucketRegion}
+      ConfigSnapshotDeliveryProperties:
+        DeliveryFrequency: TwentyFour_Hours
+
+Outputs:
+  oUpdateNonce:
+    Description: Just an output of the Nonce value
+    Value: !Ref pUpdateNonce
+
+  oConfigRecorder:
+    Description: Config Recorder
+    Value: !Ref rConfigRecorderMain
+    Export:
+      Name: !Sub ${AWS::StackName}-oConfigRecorder
+
+  oConfigDeliveryChannel:
+    Description: Config Delivery Channel
+    Value: !Ref rConfigDeliveryChannelMain
+    Export:
+      Name: !Sub ${AWS::StackName}-oConfigDeliveryChannel
